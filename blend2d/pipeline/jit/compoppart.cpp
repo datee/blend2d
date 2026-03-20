@@ -95,10 +95,7 @@ CompOpPart::CompOpPart(PipeCompiler* pc, CompOpExt comp_op, FetchPart* dst_part,
   }
   _max_vec_width_supported = max_vec_width;
 #elif defined(BL_JIT_ARCH_A64)
-  // TODO: [JIT] OPTIMIZATION: Every composition mode should use packed in the future (AArch64).
-  if (is_src_copy() || is_src_over() || is_screen()) {
-    _coverage_format = PixelCoverageFormat::kPacked;
-  }
+  _coverage_format = PixelCoverageFormat::kPacked;
 #endif
 }
 

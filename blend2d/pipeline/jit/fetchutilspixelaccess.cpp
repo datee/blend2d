@@ -1507,16 +1507,48 @@ void fetch_mask_a8_into_ua(PipeCompiler* pc, VecArray& d_vec, const Gp& s_ptr, P
 #if defined(BL_JIT_ARCH_X86)
 // Works for SSE4.1, AVX/AVX2, and AVX-512 cases.
 static void fetch_mask_a8_into_pc_by_expanding_to_32bits(PipeCompiler* pc, VecArray& d_vec, const Gp& s_ptr, PixelCount n, AdvanceMode advance_mode, GlobalAlpha* ga) noexcept {
-  pc->v_loaduvec_u8_to_u32(d_vec, ptr(s_ptr));
-
-  if (advance_mode == AdvanceMode::kAdvance) {
-    pc->add(s_ptr, s_ptr, uint32_t(n));
-  }
-
-  // TODO: [JIT] We can save some multiplications if we only extend to 16 bits, then multiply, and then shuffle.
   if (ga) {
-    pc->v_mul_u16(d_vec, d_vec, ga->ua());
-    pc->v_div255_u16(d_vec);
+    // Optimization: extend u8→u16 first, multiply+div255 at u16 width (half the vector operations), then expand
+    // u16→u32. This saves multiply and div255 instructions because we operate on half as many vectors.
+    size_t u16_count = (d_vec.size() + 1u) / 2u;
+    Mem m = ptr(s_ptr);
+
+    for (size_t i = 0; i < u16_count; i++) {
+      pc->v_cvt_u8_lo_to_u16(d_vec[i], m);
+      m.add_offset_lo32(int32_t(d_vec[i].size() / 2u));
+    }
+
+    if (advance_mode == AdvanceMode::kAdvance) {
+      pc->add(s_ptr, s_ptr, uint32_t(n));
+    }
+
+    // Multiply and div255 at u16 width — operates on u16_count vectors instead of d_vec.size().
+    for (size_t i = 0; i < u16_count; i++) {
+      pc->v_mul_u16(d_vec[i], d_vec[i], ga->ua());
+    }
+    for (size_t i = 0; i < u16_count; i++) {
+      pc->v_div255_u16(d_vec[i]);
+    }
+
+    // Expand u16→u32 using zero interleave (process from back to avoid clobbering source data).
+    Operand zero = pc->simd_const(&pc->ct<CommonTable>().p_0000000000000000, Bcst::kNA, d_vec);
+    for (size_t i = u16_count; i > 0u; ) {
+      i--;
+      size_t d_hi = i * 2u + 1u;
+      size_t d_lo = i * 2u;
+
+      if (d_hi < d_vec.size()) {
+        pc->v_interleave_hi_u16(d_vec[d_hi], d_vec[i], zero);
+      }
+      pc->v_interleave_lo_u16(d_vec[d_lo], d_vec[i], zero);
+    }
+  }
+  else {
+    pc->v_loaduvec_u8_to_u32(d_vec, ptr(s_ptr));
+
+    if (advance_mode == AdvanceMode::kAdvance) {
+      pc->add(s_ptr, s_ptr, uint32_t(n));
+    }
   }
 
   pc->v_swizzlev_u8(d_vec, d_vec, pc->simd_const(&pc->ct<CommonTable>().swizu8_xxx3xxx2xxx1xxx0_to_3333222211110000, Bcst::kNA, d_vec));
@@ -1634,7 +1666,11 @@ void fetch_mask_a8_into_pc(PipeCompiler* pc, VecArray d_vec, const Gp& s_ptr, Pi
   VecArray a_vec = d_vec.every_nth(4);
   fetch_vec8(pc, a_vec, s_ptr, uint32_t(n), advance_mode, predicate);
 
-  // TODO: [JIT] This is not optimal in X86 case - we should zero extend to U16, multiply, and then expand to U32.
+  // TODO: [JIT] OPTIMIZATION: For X86 YMM/ZMM paths, keeping data at u16 width after multiply+div255 and expanding
+  // u16→u32 directly would avoid the pack-to-u8 round-trip in multiply_packed_mask_with_global_alpha followed by
+  // re-expansion in expand_a8_mask_to_pc_ymm_zmm. This requires writing u16→u32 variants of the YMM/ZMM expansion
+  // paths (AVX2 permute, AVX-512 extract, AVX512_VBMI permute). See fetch_mask_a8_into_pc_by_expanding_to_32bits()
+  // for the analogous optimization already applied to the 128-bit SSE4.1+ path.
   if (ga) {
     multiply_packed_mask_with_global_alpha(pc, a_vec, uint32_t(n), ga);
   }

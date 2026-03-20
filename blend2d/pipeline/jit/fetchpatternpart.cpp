@@ -731,9 +731,9 @@ void FetchSimplePatternPart::start_at_x(const Gp& x) noexcept {
     // Blit AA
     // -------
 
-    // TODO: [JIT] OPTIMIZATION: Relax this constraint.
-    // Rectangular blits only.
-    BL_ASSERT(is_rect_fill());
+    if (!is_rect_fill()) {
+      pc->add_scaled(f->srcp1, x, int(bpp()));
+    }
   }
   else if (extend_x() == ExtendMode::kPad) {
     // Horizontal Pad
@@ -1893,12 +1893,17 @@ void FetchAffinePatternPart::clamp_vec_idx_32(Vec& dst, const Vec& src, ClampSte
       BL_ASSERT(dst.id() == src.id());
 
 #if defined(BL_JIT_ARCH_X86)
-      // TODO: [JIT] OPTIMIZATION: AVX-512 masking seems slower than AVX2.
-      // if (pc->has_avx512()) {
+      // NOTE: AVX-512 masking approach (vpcmpgtd into k-register + masked vmovdqa32) was benchmarked and found to be
+      // slower than the AVX2 XOR-blend approach on pre-Sapphire Rapids CPUs. The likely cause is mask register
+      // dependency chains and k-register port pressure on Ice Lake and earlier micro-architectures, where k-register
+      // operations are bottlenecked on port 5. The XOR-blend approach uses only GP SIMD ports with better throughput.
+      //
+      // Reference (commented-out AVX-512 approach):
       //   x86::KReg k = cc->new_kw("f.kTmp");
       //   cc->vpcmpgtd(k, dst, f->maxx_maxy);
       //   cc->k(k).vmovdqa32(dst, f->corx_cory);
-      // }
+      //
+      // TODO: Re-evaluate on Sapphire Rapids+ / Zen5+ where k-register handling has improved.
 
       if (!pc->has_sse4_1()) {
         // Blend(a, b, cond) == a ^ ((a ^ b) &  cond)

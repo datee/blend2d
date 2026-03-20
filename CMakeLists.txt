@@ -299,6 +299,7 @@ set(BLEND2D_SRC_LIST
   blend2d/pipeline/piperuntime_p.h
 
   blend2d/pipeline/jit/compoppart.cpp
+  blend2d/pipeline/jit/compoppart_coverage_test.cpp
   blend2d/pipeline/jit/compoppart_p.h
   blend2d/pipeline/jit/compoputils_p.h
   blend2d/pipeline/jit/fetchgradientpart.cpp
@@ -307,6 +308,7 @@ set(BLEND2D_SRC_LIST
   blend2d/pipeline/jit/fetchpart_p.h
   blend2d/pipeline/jit/fetchpatternpart.cpp
   blend2d/pipeline/jit/fetchpatternpart_p.h
+  blend2d/pipeline/jit/fetchpatternpart_test.cpp
   blend2d/pipeline/jit/fetchpixelptrpart.cpp
   blend2d/pipeline/jit/fetchpixelptrpart_p.h
   blend2d/pipeline/jit/fetchsolidpart.cpp
@@ -318,6 +320,7 @@ set(BLEND2D_SRC_LIST
   blend2d/pipeline/jit/fetchutilsinlineloops_p.h
   blend2d/pipeline/jit/fetchutilspixelaccess.cpp
   blend2d/pipeline/jit/fetchutilspixelaccess_p.h
+  blend2d/pipeline/jit/fetchutilspixelaccess_test.cpp
   blend2d/pipeline/jit/fetchutilspixelgather.cpp
   blend2d/pipeline/jit/fetchutilspixelgather_p.h
   blend2d/pipeline/jit/fillpart.cpp
