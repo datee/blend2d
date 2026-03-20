@@ -593,9 +593,6 @@ static BL_INLINE_CONSTEXPR bool bl_test_flag(const T& x, const T& y) noexcept {
   return (std::underlying_type_t<T>(x) & std::underlying_type_t<T>(y)) != std::underlying_type_t<T>(0);
 }
 
-// TODO: Remove.
-template<typename T, typename F>
-static BL_INLINE_NODEBUG void bl_assign_func(T** dst, F f) noexcept { *(void**)dst = (void*)f; }
 
 // Miscellaneous Internals
 // =======================

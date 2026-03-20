@@ -60,7 +60,8 @@ enum class RenderingMode : uint32_t {
 //!    the rendering context is created, all WEAK state flags are false, which means that there is no previous state
 //!    where to save.
 //!
-//!  - queue flags - TODO
+//!  - queue flags - describe whether command/job queues are full or resource pools are exhausted, used to
+//!    trigger queue flushes or pool refills before enqueuing new render commands.
 enum class ContextFlags : uint32_t {
   //! No flags set.
   kNoFlagsSet = 0u,

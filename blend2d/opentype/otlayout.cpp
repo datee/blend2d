@@ -356,56 +356,6 @@ static const GSubGPosLookupInfo gpos_lookup_info_table = {
   }
 };
 
-// bl::OpenType::LayoutImpl - GSUB & GPOS - Validation Helpers
-// ===========================================================
-
-// TODO: [OpenType] REMOVE?
-/*
-static bool validate_raw_offset_array(ValidationContext& validator, RawTable data, const char* table_name) noexcept {
-  if (data.size < 2u)
-    return validator.invalid_table_size(table_name, data.size, 2u);
-
-  uint32_t count = data.data_as<Array16<UInt16>>()->count();
-  uint32_t header_size = 2u + count * 2u;
-
-  if (data.size < header_size)
-    return validator.invalid_table_size(table_name, data.size, header_size);
-
-  const UInt16* array = data.data_as<Array16<Offset16>>()->array();
-  OffsetRange range{header_size, uint32_t(data.size)};
-
-  for (uint32_t i = 0; i < count; i++) {
-    uint32_t offset = array[i].value();
-    if (!range.contains(offset))
-      return validator.invalid_offset_array(table_name, i, offset, range);
-  }
-
-  return true;
-}
-
-static bool validateTagRef16Array(ValidationContext& validator, RawTable data, const char* table_name) noexcept {
-  if (data.size < 2u)
-    return validator.invalid_table_size(table_name, data.size, 2u);
-
-  uint32_t count = data.data_as<Array16<UInt16>>()->count();
-  uint32_t header_size = 2u + count * uint32_t(sizeof(TagRef16));
-
-  if (data.size < header_size)
-    return validator.invalid_table_size(table_name, data.size, header_size);
-
-  const TagRef16* array = data.data_as<Array16<TagRef16>>()->array();
-  OffsetRange range{header_size, uint32_t(data.size)};
-
-  for (uint32_t i = 0; i < count; i++) {
-    uint32_t offset = array[i].offset.value();
-    if (!range.contains(offset))
-      return validator.invalid_offset_array(table_name, i, offset, range);
-  }
-
-  return true;
-}
-*/
-
 // bl::OpenType::LayoutImpl - GSUB & GPOS - Apply Scope
 // ====================================================
 

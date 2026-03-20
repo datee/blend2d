@@ -499,12 +499,12 @@ void bl_transform_rt_init(BLRuntimeContext* rt) noexcept {
   bl_unused(rt);
   BLMapPointDArrayFunc* funcs = bl::TransformInternal::map_pointd_array_funcs;
 
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_IDENTITY ], bl::TransformInternal::bl_matrix2d_map_pointd_array_identity);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_TRANSLATE], bl::TransformInternal::bl_matrix2d_map_pointd_array_translate);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_SCALE    ], bl::TransformInternal::bl_matrix2d_map_pointd_array_scale);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_SWAP     ], bl::TransformInternal::bl_matrix2d_map_pointd_array_swap);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_AFFINE   ], bl::TransformInternal::bl_matrix2d_map_pointd_array_affine);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_INVALID  ], bl::TransformInternal::bl_matrix2d_map_pointd_array_affine);
+  funcs[BL_TRANSFORM_TYPE_IDENTITY ] = (BLMapPointDArrayFunc)bl::TransformInternal::bl_matrix2d_map_pointd_array_identity;
+  funcs[BL_TRANSFORM_TYPE_TRANSLATE] = (BLMapPointDArrayFunc)bl::TransformInternal::bl_matrix2d_map_pointd_array_translate;
+  funcs[BL_TRANSFORM_TYPE_SCALE    ] = (BLMapPointDArrayFunc)bl::TransformInternal::bl_matrix2d_map_pointd_array_scale;
+  funcs[BL_TRANSFORM_TYPE_SWAP     ] = (BLMapPointDArrayFunc)bl::TransformInternal::bl_matrix2d_map_pointd_array_swap;
+  funcs[BL_TRANSFORM_TYPE_AFFINE   ] = (BLMapPointDArrayFunc)bl::TransformInternal::bl_matrix2d_map_pointd_array_affine;
+  funcs[BL_TRANSFORM_TYPE_INVALID  ] = (BLMapPointDArrayFunc)bl::TransformInternal::bl_matrix2d_map_pointd_array_affine;
 #endif
 
 #ifdef BL_BUILD_OPT_SSE2

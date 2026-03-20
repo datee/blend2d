@@ -317,12 +317,12 @@ void bl_transform_rt_init_sse2(BLRuntimeContext* rt) noexcept {
   bl_unused(rt);
   BLMapPointDArrayFunc* funcs = map_pointd_array_funcs;
 
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_IDENTITY ], map_pointd_array_identity_sse2);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_TRANSLATE], map_pointd_array_translate_sse2);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_SCALE    ], map_pointd_array_scale_sse2);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_SWAP     ], map_pointd_array_swap_sse2);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_AFFINE   ], map_pointd_array_affine_sse2);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_INVALID  ], map_pointd_array_affine_sse2);
+  funcs[BL_TRANSFORM_TYPE_IDENTITY ] = (BLMapPointDArrayFunc)map_pointd_array_identity_sse2;
+  funcs[BL_TRANSFORM_TYPE_TRANSLATE] = (BLMapPointDArrayFunc)map_pointd_array_translate_sse2;
+  funcs[BL_TRANSFORM_TYPE_SCALE    ] = (BLMapPointDArrayFunc)map_pointd_array_scale_sse2;
+  funcs[BL_TRANSFORM_TYPE_SWAP     ] = (BLMapPointDArrayFunc)map_pointd_array_swap_sse2;
+  funcs[BL_TRANSFORM_TYPE_AFFINE   ] = (BLMapPointDArrayFunc)map_pointd_array_affine_sse2;
+  funcs[BL_TRANSFORM_TYPE_INVALID  ] = (BLMapPointDArrayFunc)map_pointd_array_affine_sse2;
 }
 
 } // {TransformInternal}

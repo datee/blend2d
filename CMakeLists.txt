@@ -165,6 +165,7 @@ set(BLEND2D_SRC_LIST
   blend2d/core/matrix_avx.cpp
   blend2d/core/matrix_sse2.cpp
   blend2d/core/matrix_test.cpp
+  blend2d/core/matrix_dispatch_test.cpp
   blend2d/core/matrix.h
   blend2d/core/matrix_p.h
   blend2d/core/object.cpp

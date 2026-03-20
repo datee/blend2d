@@ -343,7 +343,7 @@ struct BLContextCreateInfo {
   //!
   //! If this parameter is zero the queue size will be determined automatically.
   //!
-  //! TODO: To be documented, has no effect at the moment.
+  //! \note Reserved for future use. This field is currently ignored by the rendering engine.
   uint32_t command_queue_limit;
 
   //! Maximum number of saved states.

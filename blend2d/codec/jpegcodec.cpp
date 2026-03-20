@@ -160,10 +160,10 @@ static BLResult decoder_process_marker(BLJpegDecoderImpl* decoder_impl, uint32_t
         }
       }
 
-      // TODO: [JPEG] Is this necessary?
-      // Required by JFIF.
+      // JFIF requires component IDs to be 1, 2, 3. However, some versions of JpegTran
+      // output non-compliant files using 0-based IDs (0, 1, 2). Accept both conventions,
+      // but reject anything else as invalid.
       if (comp_id != i + 1) {
-        // Some version of JpegTran outputs non-JFIF-compliant files!
         if (comp_id != i) {
           return bl_make_error(BL_ERROR_INVALID_DATA);
         }
@@ -521,7 +521,8 @@ static BLResult decoder_process_marker(BLJpegDecoderImpl* decoder_impl, uint32_t
 
       switch (density_unit) {
         case kDensityOnlyAspect:
-          // TODO: [JPEG]
+          // Per JFIF spec, density_unit=0 means X/Y density fields specify pixel aspect ratio only,
+          // not absolute DPI. Leave image_info.density at its default (no absolute density available).
           break;
 
         case kDensityPixelsPerIN:

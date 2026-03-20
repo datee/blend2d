@@ -27,8 +27,8 @@ void bl_fuxex_rt_init(BLRuntimeContext* rt) noexcept {
 #elif !defined(BL_BUILD_NO_FUTEX) && defined(__OpenBSD__)
 
 void bl_fuxex_rt_init(BLRuntimeContext* rt) noexcept {
-  // TODO: How to detect support on OpenBSD?
-  rt->features_info.futex_enabled = 0;
+  // OpenBSD has supported futex(2) since version 6.2 (October 2017).
+  rt->features_info.futex_enabled = 1;
 }
 
 #elif !defined(BL_BUILD_NO_FUTEX) && defined(_WIN32)

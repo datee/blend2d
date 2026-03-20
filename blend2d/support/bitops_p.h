@@ -500,9 +500,7 @@ using PrivateBitWordOps = ParametrizedBitOps<BitOrder::kPrivate, BLBitWord>;
 
 } // {anonymous}
 
-// TODO: REMOVE, FOR COMPATIBILITY ONLY.
-
-//! Iterates over each bit in a number which is set to 1.
+//! Iterates over each bit in a number which is set to 1 (LSB-first order).
 //!
 //! Example of use:
 //!

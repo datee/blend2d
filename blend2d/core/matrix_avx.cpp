@@ -213,12 +213,12 @@ void bl_transform_rt_init_avx(BLRuntimeContext* rt) noexcept {
   bl_unused(rt);
   BLMapPointDArrayFunc* funcs = map_pointd_array_funcs;
 
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_IDENTITY ], map_point_darray_identity_avx);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_TRANSLATE], map_point_darray_translate_avx);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_SCALE    ], map_point_darray_scale_avx);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_SWAP     ], map_point_darray_swap_avx);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_AFFINE   ], map_point_darray_affine_avx);
-  bl_assign_func(&funcs[BL_TRANSFORM_TYPE_INVALID  ], map_point_darray_affine_avx);
+  funcs[BL_TRANSFORM_TYPE_IDENTITY ] = (BLMapPointDArrayFunc)map_point_darray_identity_avx;
+  funcs[BL_TRANSFORM_TYPE_TRANSLATE] = (BLMapPointDArrayFunc)map_point_darray_translate_avx;
+  funcs[BL_TRANSFORM_TYPE_SCALE    ] = (BLMapPointDArrayFunc)map_point_darray_scale_avx;
+  funcs[BL_TRANSFORM_TYPE_SWAP     ] = (BLMapPointDArrayFunc)map_point_darray_swap_avx;
+  funcs[BL_TRANSFORM_TYPE_AFFINE   ] = (BLMapPointDArrayFunc)map_point_darray_affine_avx;
+  funcs[BL_TRANSFORM_TYPE_INVALID  ] = (BLMapPointDArrayFunc)map_point_darray_affine_avx;
 }
 
 } // {TransformInternal}
