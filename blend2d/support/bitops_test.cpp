@@ -184,6 +184,70 @@ static void test_bit_word_iterator() {
     EXPECT_EQ(it.next(), 2u);
     EXPECT_FALSE(it.has_next());
   }
+
+  INFO("bl::BitWordIterator<uint32_t> - adjacent bits (0x7)");
+  {
+    BitWordIterator<uint32_t> it(0x7u);
+    EXPECT_EQ(it.next(), 0u);
+    EXPECT_EQ(it.next(), 1u);
+    EXPECT_EQ(it.next(), 2u);
+    EXPECT_FALSE(it.has_next());
+  }
+
+  INFO("bl::BitWordIterator<uint32_t> - exact bit positions verified");
+  {
+    // Verify that every bit in the input is visited exactly once.
+    uint32_t input = 0xA5A5A5A5u; // alternating pattern: bits 0,2,5,7,8,10,13,15,...
+    uint32_t reconstructed = 0;
+    BitWordIterator<uint32_t> it(input);
+
+    while (it.has_next()) {
+      uint32_t bit = it.next();
+      EXPECT_TRUE(bit < 32u);
+      reconstructed |= (1u << bit);
+    }
+
+    EXPECT_EQ(reconstructed, input)
+      .message("Reconstructed bitmask 0x%08X != input 0x%08X", reconstructed, input);
+  }
+
+  INFO("bl::BitWordIterator<uint64_t> - 64-bit type (high bits)");
+  {
+    // This matches how threadpool.cpp uses BitWordIterator<BLBitWord> where BLBitWord is 64-bit.
+    BitWordIterator<uint64_t> it(uint64_t(1) << 63 | uint64_t(1) << 32 | uint64_t(1));
+    EXPECT_EQ(it.next(), 0u);
+    EXPECT_EQ(it.next(), 32u);
+    EXPECT_EQ(it.next(), 63u);
+    EXPECT_FALSE(it.has_next());
+  }
+
+  INFO("bl::BitWordIterator<uint64_t> - 64-bit all bits");
+  {
+    BitWordIterator<uint64_t> it(~uint64_t(0));
+    uint32_t count = 0;
+
+    while (it.has_next()) {
+      EXPECT_EQ(it.next(), count);
+      count++;
+    }
+
+    EXPECT_EQ(count, 64u);
+  }
+
+  INFO("bl::BitWordIterator<uint64_t> - 64-bit reconstruct");
+  {
+    uint64_t input = 0xDEADBEEFCAFEBABEull;
+    uint64_t reconstructed = 0;
+    BitWordIterator<uint64_t> it(input);
+
+    while (it.has_next()) {
+      uint32_t bit = it.next();
+      EXPECT_TRUE(bit < 64u);
+      reconstructed |= (uint64_t(1) << bit);
+    }
+
+    EXPECT_EQ(reconstructed, input);
+  }
 }
 
 UNIT(support_bitops, BL_TEST_GROUP_SUPPORT_UTILITIES) {
