@@ -2788,8 +2788,15 @@ static BL_INLINE BLResult enqueue_fill_or_stroke_text(
 template<RenderingMode kRM>
 static BL_INLINE BLResult fill_clipped_box_a(BLRasterContextImpl* ctx_impl, DispatchInfo di, DispatchStyle ds, const BLBoxI& box_a) noexcept;
 
+// Forward declaration for clip mask redirection (defined after fill_clipped_box_masked_a).
+static BLResult fill_with_clip_mask_sync(BLRasterContextImpl* ctx_impl, DispatchInfo di, DispatchStyle ds, const BLBoxI& box_a) noexcept;
+
 template<>
 BL_INLINE BLResult fill_clipped_box_a<kSync>(BLRasterContextImpl* ctx_impl, DispatchInfo di, DispatchStyle ds, const BLBoxI& box_a) noexcept {
+  // When clip mask is active, redirect ALL fills through the masked path.
+  if (ctx_impl->clip_mode() == BL_CLIP_MODE_MASK)
+    return fill_with_clip_mask_sync(ctx_impl, di, ds, box_a);
+
   Pipeline::DispatchData dispatch_data;
   di.add_fill_type(Pipeline::FillType::kBoxA);
   BL_PROPAGATE(ensure_fetch_and_dispatch_data(ctx_impl, di.signature, ds.fetch_data, &dispatch_data));
@@ -2867,12 +2874,6 @@ BL_INLINE BLResult fill_clipped_box_f<kAsync>(BLRasterContextImpl* ctx_impl, Dis
   BL_PROPAGATE(ensure_fetch_and_dispatch_data(ctx_impl, di.signature, ds.fetch_data, command->pipe_dispatch_data()));
   return enqueue_command(ctx_impl, command, qy0, ds.fetch_data, [&](RenderCommand*) noexcept {});
 }
-
-// bl::RasterEngine - ContextImpl - Internals - Fill All
-// =====================================================
-
-// NOTE: fill_all() is defined after fill_clipped_box_masked_a() below,
-// because it needs to call fill_clipped_box_masked_a() when clip_mode == MASK.
 
 // bl::RasterEngine - ContextImpl - Internals - Fill Clipped Edges
 // ===============================================================
@@ -3321,6 +3322,14 @@ BL_NOINLINE BLResult fill_clipped_box_masked_a<kAsync>(
   return enqueue_command(ctx_impl, command, qy0, ds.fetch_data, [&](RenderCommand* command) noexcept {
     ObjectInternal::retain_impl<RCMode::kMaybe>(command->_payload.box_mask_a.mask_image_i.ptr);
   });
+}
+
+// Redirect fill through clip mask (called from fill_clipped_box_a<kSync> when clip_mode == MASK).
+static BLResult fill_with_clip_mask_sync(BLRasterContextImpl* ctx_impl, DispatchInfo di, DispatchStyle ds, const BLBoxI& box_a) noexcept {
+  BLPointI mask_read_offset(
+    box_a.x0 - ctx_impl->clip_mask_offset.x,
+    box_a.y0 - ctx_impl->clip_mask_offset.y);
+  return fill_clipped_box_masked_a<kSync>(ctx_impl, di, ds, box_a, &ctx_impl->clip_mask, mask_read_offset);
 }
 
 // bl::RasterEngine - ContextImpl - Internals - Fill All

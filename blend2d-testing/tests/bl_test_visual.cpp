@@ -2181,6 +2181,195 @@ static void test_double_path_clip() {
   save_image(img, "test_40_double_path_clip.png");
 }
 
+// ----- Test 41: Path Clip with fill_rect -----
+static void test_path_clip_fill_rect() {
+  printf("\nTest 41: Path Clip with fill_rect\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFFFFFFFF));
+
+  // Clip to star shape
+  BLPath star;
+  double cx = 128, cy = 128, r_outer = 90, r_inner = 40;
+  for (int i = 0; i < 10; i++) {
+    double angle = 3.14159265 * 2.0 * i / 10.0 - 3.14159265 / 2.0;
+    double r = (i % 2 == 0) ? r_outer : r_inner;
+    double px = cx + r * cos(angle);
+    double py = cy + r * sin(angle);
+    if (i == 0) star.move_to(px, py);
+    else star.line_to(px, py);
+  }
+  star.close();
+  ctx.clip_to_path(star);
+
+  // Fill multiple colored rects — only star-shaped area should be visible
+  ctx.fill_rect(BLRect(0, 0, 128, 128), BLRgba32(0xFFFF0000));
+  ctx.fill_rect(BLRect(128, 0, 128, 128), BLRgba32(0xFF00FF00));
+  ctx.fill_rect(BLRect(0, 128, 128, 128), BLRgba32(0xFF0000FF));
+  ctx.fill_rect(BLRect(128, 128, 128, 128), BLRgba32(0xFFFFFF00));
+
+  ctx.end();
+
+  // Center should have color (inside star)
+  uint32_t center = get_pixel(img, 128, 128);
+  if (pixel_a(center) == 0xFF && (pixel_r(center) > 0 || pixel_g(center) > 0 || pixel_b(center) > 0)) {
+    printf("  PASS: Star clip center has color\n"); g_passes++;
+  } else {
+    printf("  FAIL: Star clip center empty (0x%08X)\n", center); g_failures++;
+  }
+
+  // Corner (outside star): white
+  check_pixel_near(img, 10, 10, 0xFFFFFFFF, 5, "Star clip: corner white");
+
+  // Top point of star (should be red quadrant)
+  uint32_t top = get_pixel(img, 128, 40);
+  if (pixel_r(top) > 100 || pixel_g(top) > 100) {
+    printf("  PASS: Star top point has color\n"); g_passes++;
+  } else {
+    printf("  FAIL: Star top point empty\n"); g_failures++;
+  }
+
+  save_image(img, "test_41_star_clip_rects.png");
+}
+
+// ----- Test 42: Path Clip with fill_path -----
+static void test_path_clip_fill_path() {
+  printf("\nTest 42: Path Clip with fill_path\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFF000000)); // Black background
+
+  // Clip to hexagon
+  BLPath hex;
+  for (int i = 0; i < 6; i++) {
+    double angle = 3.14159265 * 2.0 * i / 6.0;
+    double px = 128 + 80 * cos(angle);
+    double py = 128 + 80 * sin(angle);
+    if (i == 0) hex.move_to(px, py);
+    else hex.line_to(px, py);
+  }
+  hex.close();
+  ctx.clip_to_path(hex);
+
+  // Fill a circle inside the clip — should be clipped to hexagon
+  BLPath big_circle;
+  big_circle.add_circle(BLCircle(128, 128, 120));
+  ctx.fill_path(big_circle, BLRgba32(0xFFFF8800));
+
+  ctx.end();
+
+  // Center: orange (inside both hex and circle)
+  uint32_t center = get_pixel(img, 128, 128);
+  if (pixel_r(center) > 200) {
+    printf("  PASS: Hex clip center orange (R=%u)\n", unsigned(pixel_r(center))); g_passes++;
+  } else {
+    printf("  FAIL: Hex clip center not orange (R=%u)\n", unsigned(pixel_r(center))); g_failures++;
+  }
+
+  // Corner: black (outside hex)
+  check_pixel_near(img, 10, 10, 0xFF000000, 5, "Hex clip: corner black");
+
+  save_image(img, "test_42_hex_clip_circle.png");
+}
+
+// ----- Test 43: Path Clip with gradient fill -----
+static void test_path_clip_gradient() {
+  printf("\nTest 43: Path Clip with Gradient\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFFFFFFFF));
+
+  // Clip to rounded rect
+  BLPath rrect;
+  rrect.add_round_rect(BLRoundRect(30, 30, 196, 196, 30));
+  ctx.clip_to_path(rrect);
+
+  // Fill with radial gradient
+  BLGradient grad(BLRadialGradientValues(128, 128, 128, 128, 100));
+  grad.add_stop(0.0, BLRgba32(0xFFFFFF00));
+  grad.add_stop(1.0, BLRgba32(0xFFFF0000));
+  ctx.fill_all(grad);
+
+  ctx.end();
+
+  // Center: yellow (center of gradient)
+  uint32_t center = get_pixel(img, 128, 128);
+  if (pixel_r(center) > 200 && pixel_g(center) > 200) {
+    printf("  PASS: Gradient clip center yellow\n"); g_passes++;
+  } else {
+    printf("  FAIL: Gradient clip center wrong (R=%u G=%u)\n",
+           unsigned(pixel_r(center)), unsigned(pixel_g(center))); g_failures++;
+  }
+
+  // Corner (outside rounded rect): white
+  check_pixel_near(img, 5, 5, 0xFFFFFFFF, 5, "Rounded rect clip: corner white");
+
+  // Just inside rounded rect edge
+  uint32_t edge = get_pixel(img, 50, 50);
+  if (pixel_r(edge) > 100) {
+    printf("  PASS: Gradient visible inside clip\n"); g_passes++;
+  } else {
+    printf("  FAIL: No gradient inside clip\n"); g_failures++;
+  }
+
+  save_image(img, "test_43_rrect_clip_gradient.png");
+}
+
+// ----- Test 44: Path Clip with blit_image -----
+static void test_path_clip_blit() {
+  printf("\nTest 44: Path Clip with blit_image\n");
+
+  // Create a colorful source image
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    BLGradient grad(BLLinearGradientValues(0, 0, 256, 256));
+    grad.add_stop(0.0, BLRgba32(0xFFFF0000));
+    grad.add_stop(0.5, BLRgba32(0xFF00FF00));
+    grad.add_stop(1.0, BLRgba32(0xFF0000FF));
+    ctx.fill_all(grad);
+    ctx.end();
+  }
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFF000000)); // Black
+
+  // Clip to diamond shape
+  BLPath diamond;
+  diamond.move_to(128, 20);
+  diamond.line_to(236, 128);
+  diamond.line_to(128, 236);
+  diamond.line_to(20, 128);
+  diamond.close();
+  ctx.clip_to_path(diamond);
+
+  // Blit the gradient image through the diamond clip
+  ctx.blit_image(BLPoint(0, 0), src);
+
+  ctx.end();
+
+  // Center: should have gradient color
+  uint32_t center = get_pixel(img, 128, 128);
+  if (pixel_r(center) > 0 || pixel_g(center) > 0 || pixel_b(center) > 0) {
+    printf("  PASS: Diamond clip blit has color\n"); g_passes++;
+  } else {
+    printf("  FAIL: Diamond clip blit empty\n"); g_failures++;
+  }
+
+  // Corner: black (outside diamond)
+  check_pixel_near(img, 10, 10, 0xFF000000, 5, "Diamond clip: corner black");
+
+  save_image(img, "test_44_diamond_clip_blit.png");
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -2229,6 +2418,10 @@ int main(int argc, char* argv[]) {
   test_path_clip_save_restore();
   test_nested_path_clip();
   test_double_path_clip();
+  test_path_clip_fill_rect();
+  test_path_clip_fill_path();
+  test_path_clip_gradient();
+  test_path_clip_blit();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
