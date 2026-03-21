@@ -98,10 +98,24 @@ struct BLImageEffectOptions {
   double offset_y;
   //! Color for glow or drop shadow (0xAARRGGBB).
   uint32_t color;
+  //! Flags controlling effect behavior.
+  uint32_t flags;
 
 #ifdef __cplusplus
   BL_INLINE void reset() noexcept { *this = BLImageEffectOptions{}; }
 #endif
+};
+
+//! Flags for `BLImageEffectOptions::flags`.
+BL_DEFINE_ENUM(BLImageEffectFlags) {
+  //! No flags.
+  BL_IMAGE_EFFECT_FLAG_NONE = 0,
+  //! Inner glow/shadow: effect renders inside the shape instead of outside.
+  BL_IMAGE_EFFECT_FLAG_INNER = 0x00000001u,
+  //! Knockout: the original shape is removed, leaving only the effect.
+  BL_IMAGE_EFFECT_FLAG_KNOCKOUT = 0x00000002u
+
+  BL_FORCE_ENUM_UINT32(BL_IMAGE_EFFECT_FLAG)
 };
 
 //! Data that describes a raster image. Used by \ref BLImage.

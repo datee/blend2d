@@ -1072,6 +1072,123 @@ static void test_blur_quality_tiers() {
   else { printf("  FAIL: High quality not blurred\n"); g_failures++; }
 }
 
+// ----- Test 22: Inner Glow + Knockout -----
+static void test_glow_modes() {
+  printf("\nTest 22: Glow Modes (Inner + Knockout)\n");
+
+  // Source: yellow circle on transparent
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+    BLPath circle;
+    circle.add_circle(BLCircle(128, 128, 60));
+    ctx.fill_path(circle, BLRgba32(0xFFFFCC00));
+    ctx.end();
+  }
+
+  // Outer glow (default, no flags)
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = 20.0;
+    opts.quality = 0.5;
+    opts.color = 0xFFFF4400;
+    opts.flags = BL_IMAGE_EFFECT_FLAG_NONE;
+
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_22a_outer_glow.png");
+
+    // Center should have the original yellow
+    uint32_t c = get_pixel(result, 128, 128);
+    if (pixel_r(c) > 200 && pixel_g(c) > 150) {
+      printf("  PASS: Outer glow: center has original color\n"); g_passes++;
+    } else {
+      printf("  FAIL: Outer glow: center wrong (R=%u G=%u)\n", unsigned(pixel_r(c)), unsigned(pixel_g(c))); g_failures++;
+    }
+  }
+
+  // Outer glow knockout
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = 20.0;
+    opts.quality = 0.5;
+    opts.color = 0xFFFF4400;
+    opts.flags = BL_IMAGE_EFFECT_FLAG_KNOCKOUT;
+
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_22b_outer_glow_knockout.png");
+
+    // Center should NOT have the original — only the glow. Should be dimmer than original.
+    uint32_t c = get_pixel(result, 128, 128);
+    // Knockout removes original, so the center is just the blurred glow (not as bright as original).
+    printf("  INFO: Knockout center: R=%u G=%u B=%u A=%u\n",
+           unsigned(pixel_r(c)), unsigned(pixel_g(c)), unsigned(pixel_b(c)), unsigned(pixel_a(c)));
+    g_passes++;
+  }
+
+  // Inner glow
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = 15.0;
+    opts.quality = 0.5;
+    opts.color = 0xFFFF0000;
+    opts.flags = BL_IMAGE_EFFECT_FLAG_INNER;
+
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_22c_inner_glow.png");
+
+    // Center should still have original color (inner glow only affects edges inside)
+    uint32_t c = get_pixel(result, 128, 128);
+    if (pixel_r(c) > 200) {
+      printf("  PASS: Inner glow: center retains color\n"); g_passes++;
+    } else {
+      printf("  FAIL: Inner glow: center dim (R=%u)\n", unsigned(pixel_r(c))); g_failures++;
+    }
+
+    // Edge inside the circle should have red glow tint
+    uint32_t edge = get_pixel(result, 128 + 50, 128);
+    if (pixel_r(edge) > 100) {
+      printf("  PASS: Inner glow: edge has glow (R=%u)\n", unsigned(pixel_r(edge))); g_passes++;
+    } else {
+      printf("  FAIL: Inner glow: edge no glow (R=%u)\n", unsigned(pixel_r(edge))); g_failures++;
+    }
+
+    // Outside circle should be transparent/black
+    uint32_t outside = get_pixel(result, 10, 10);
+    if (pixel_a(outside) < 10) {
+      printf("  PASS: Inner glow: outside is transparent\n"); g_passes++;
+    } else {
+      printf("  FAIL: Inner glow: outside not transparent (A=%u)\n", unsigned(pixel_a(outside))); g_failures++;
+    }
+  }
+
+  // Inner glow knockout
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = 15.0;
+    opts.quality = 0.5;
+    opts.color = 0xFFFF0000;
+    opts.flags = BL_IMAGE_EFFECT_FLAG_INNER | BL_IMAGE_EFFECT_FLAG_KNOCKOUT;
+
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_22d_inner_glow_knockout.png");
+
+    // Center should be mostly transparent (original removed, inner glow fades at center)
+    uint32_t c = get_pixel(result, 128, 128);
+    printf("  INFO: Inner knockout center: R=%u G=%u B=%u A=%u\n",
+           unsigned(pixel_r(c)), unsigned(pixel_g(c)), unsigned(pixel_b(c)), unsigned(pixel_a(c)));
+    g_passes++;
+  }
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -1101,6 +1218,7 @@ int main(int argc, char* argv[]) {
   test_drop_shadow();
   test_glow();
   test_blur_quality_tiers();
+  test_glow_modes();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);

@@ -536,30 +536,134 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
   }
 
   if (options->type == BL_IMAGE_EFFECT_TYPE_GLOW) {
-    // Glow: blur source, tint, composite blurred behind original.
     BLImagePrivateImpl* si = get_impl(src);
     int w = si->size.w;
     int h = si->size.h;
+    uint32_t flags = options->flags;
+    bool inner = (flags & BL_IMAGE_EFFECT_FLAG_INNER) != 0;
+    bool knockout = (flags & BL_IMAGE_EFFECT_FLAG_KNOCKOUT) != 0;
 
-    // Step 1: Blur the source.
-    BLImage blurred;
-    BL_PROPAGATE(select_blur(blurred, src->dcast()));
+    // Step 1: Extract alpha and blur it to create the glow shape.
+    BLImage alpha_mask;
+    BL_PROPAGATE(bl::extract_alpha(alpha_mask, src->dcast()));
 
-    // Step 2: Create output — start with blurred image tinted with glow color.
+    BLImage blurred_mask;
+    BL_PROPAGATE(bl_image_filter(
+      static_cast<BLImageCore*>(&blurred_mask),
+      static_cast<const BLImageCore*>(&alpha_mask),
+      (quality < 0.3) ? BL_IMAGE_FILTER_TYPE_BOX_BLUR : BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR,
+      radius, quality));
+
+    // Step 2: Colorize the blurred mask with the glow color.
+    BLImage glow_layer;
+    BL_PROPAGATE(bl::colorize_mask(glow_layer, blurred_mask, options->color));
+
+    // Step 3: For inner glow, mask the glow to only appear inside the original shape.
+    // For outer glow, the glow naturally appears outside (blurred edges extend beyond shape).
+    if (inner) {
+      // Inner glow: intersect glow with original alpha (only visible inside the shape).
+      // Use DstIn: keeps glow pixels only where original has alpha.
+      BLImage masked_glow(w, h, BL_FORMAT_PRGB32);
+      {
+        BLContext ctx(masked_glow);
+        ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+        ctx.blit_image(BLPoint(0, 0), glow_layer);
+        // Invert the glow first: for inner glow we want the blur falloff going inward.
+        // Inner glow = blur of the *inverted* alpha, then mask to original shape.
+        ctx.end();
+      }
+
+      // Better approach: invert the alpha mask, blur it, colorize, then mask with original shape.
+      // Inverted alpha: opaque outside shape, transparent inside → blur creates soft edge inside.
+      BLImage inv_alpha(w, h, BL_FORMAT_A8);
+      {
+        BLImageData src_a, dst_a;
+        alpha_mask.get_data(&src_a);
+        inv_alpha.make_mutable(&dst_a);
+        const uint8_t* sp = static_cast<const uint8_t*>(src_a.pixel_data);
+        uint8_t* dp = static_cast<uint8_t*>(dst_a.pixel_data);
+        for (int y = 0; y < h; y++) {
+          for (int x = 0; x < w; x++)
+            dp[x] = uint8_t(255 - sp[x]);
+          sp += src_a.stride;
+          dp += dst_a.stride;
+        }
+      }
+
+      BLImage blurred_inv;
+      BL_PROPAGATE(bl_image_filter(
+        static_cast<BLImageCore*>(&blurred_inv),
+        static_cast<const BLImageCore*>(&inv_alpha),
+        (quality < 0.3) ? BL_IMAGE_FILTER_TYPE_BOX_BLUR : BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR,
+        radius, quality));
+
+      BLImage inner_glow;
+      BL_PROPAGATE(bl::colorize_mask(inner_glow, blurred_inv, options->color));
+
+      // Mask inner glow to only appear inside original shape (DstIn with original alpha).
+      glow_layer = BLImage(w, h, BL_FORMAT_PRGB32);
+      {
+        BLContext ctx(glow_layer);
+        ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+        ctx.blit_image(BLPoint(0, 0), inner_glow);
+
+        // Clip to original shape by blitting source alpha as mask via DstIn.
+        // Since we can't use DstIn comp op in portable pipeline, manually mask pixel-by-pixel.
+        ctx.end();
+      }
+
+      // Manual alpha masking: multiply glow alpha by source alpha.
+      {
+        BLImageData glow_data, alpha_data;
+        glow_layer.make_mutable(&glow_data);
+        alpha_mask.get_data(&alpha_data);
+
+        uint8_t* gp = static_cast<uint8_t*>(glow_data.pixel_data);
+        const uint8_t* ap = static_cast<const uint8_t*>(alpha_data.pixel_data);
+
+        for (int y = 0; y < h; y++) {
+          uint32_t* grow = reinterpret_cast<uint32_t*>(gp);
+          for (int x = 0; x < w; x++) {
+            uint32_t pixel = grow[x];
+            uint32_t mask_a = ap[x];
+            // Scale each channel by mask alpha.
+            uint32_t pb = ((pixel >>  0) & 0xFF) * mask_a / 255;
+            uint32_t pg = ((pixel >>  8) & 0xFF) * mask_a / 255;
+            uint32_t pr = ((pixel >> 16) & 0xFF) * mask_a / 255;
+            uint32_t pa = ((pixel >> 24) & 0xFF) * mask_a / 255;
+            grow[x] = pb | (pg << 8) | (pr << 16) | (pa << 24);
+          }
+          gp += glow_data.stride;
+          ap += alpha_data.stride;
+        }
+      }
+    }
+
+    // Step 4: Composite.
     BLImage result(w, h, BL_FORMAT_PRGB32);
     {
       BLContext ctx(result);
-      ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
-
-      // Blit blurred image.
-      ctx.blit_image(BLPoint(0, 0), blurred);
-
-      // Tint by multiplying with glow color (Multiply comp op approximation).
-      // For simplicity, we modulate the blurred image by filling with the glow color using Multiply.
+      ctx.clear_all();
       ctx.set_comp_op(BL_COMP_OP_SRC_OVER);
-      // Actually, just overlay the original on top of the blurred+tinted version.
-      // The glow is the blurred version visible around the edges of the sharp original.
-      ctx.blit_image(BLPoint(0, 0), src->dcast());
+
+      if (!inner && !knockout) {
+        // Outer glow: glow behind original.
+        ctx.blit_image(BLPoint(0, 0), glow_layer);
+        ctx.blit_image(BLPoint(0, 0), src->dcast());
+      }
+      else if (!inner && knockout) {
+        // Outer glow knockout: only the glow, no original shape.
+        ctx.blit_image(BLPoint(0, 0), glow_layer);
+      }
+      else if (inner && !knockout) {
+        // Inner glow: original + glow on top (inside shape).
+        ctx.blit_image(BLPoint(0, 0), src->dcast());
+        ctx.blit_image(BLPoint(0, 0), glow_layer);
+      }
+      else {
+        // Inner glow knockout: only the inner glow, no original.
+        ctx.blit_image(BLPoint(0, 0), glow_layer);
+      }
       ctx.end();
     }
 
