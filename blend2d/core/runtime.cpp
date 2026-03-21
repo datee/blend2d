@@ -289,6 +289,7 @@ BL_API_IMPL BLResult bl_runtime_init() noexcept {
   bl_image_decoder_rt_init(rt);
   bl_image_encoder_rt_init(rt);
   bl_image_scale_rt_init(rt);
+  bl_image_filter_rt_init(rt);
   bl_pattern_rt_init(rt);
   bl_gradient_rt_init(rt);
   bl_font_feature_settings_rt_init(rt);

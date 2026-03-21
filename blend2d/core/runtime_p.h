@@ -216,6 +216,7 @@ BL_HIDDEN void bl_image_codec_rt_init(BLRuntimeContext* rt) noexcept;
 BL_HIDDEN void bl_image_decoder_rt_init(BLRuntimeContext* rt) noexcept;
 BL_HIDDEN void bl_image_encoder_rt_init(BLRuntimeContext* rt) noexcept;
 BL_HIDDEN void bl_image_scale_rt_init(BLRuntimeContext* rt) noexcept;
+BL_HIDDEN void bl_image_filter_rt_init(BLRuntimeContext* rt) noexcept;
 BL_HIDDEN void bl_pattern_rt_init(BLRuntimeContext* rt) noexcept;
 BL_HIDDEN void bl_gradient_rt_init(BLRuntimeContext* rt) noexcept;
 BL_HIDDEN void bl_font_feature_settings_rt_init(BLRuntimeContext* rt) noexcept;
