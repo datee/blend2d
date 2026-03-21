@@ -652,6 +652,8 @@ static void box_blur_horz_prgb32(
 }
 
 // Single-pass vertical box blur for PRGB32.
+// Processes 4 pixels (16 bytes) at a time to improve cache utilization — each row read
+// fills a cache line instead of touching 4 bytes of one. Falls back to scalar for remainder.
 static void box_blur_vert_prgb32(
     uint8_t* BL_RESTRICT dst_line, intptr_t dst_stride,
     const uint8_t* BL_RESTRICT src_line, intptr_t src_stride,
@@ -660,10 +662,58 @@ static void box_blur_vert_prgb32(
   int kernel = radius * 2 + 1;
   uint32_t reciprocal = (1u << 24) / uint32_t(kernel);
 
-  for (int x = 0; x < w; x++) {
+  // Process 4 columns at a time (16 bytes = good cache line utilization).
+  int x = 0;
+  for (; x + 4 <= w; x += 4) {
+    // 4 independent column accumulators, each with 4 channels = 16 accumulators.
+    uint32_t acc[4][4] = {}; // [col][channel: B,G,R,A]
+
+    // Initialize accumulators.
+    for (int i = -radius; i <= radius; i++) {
+      int yi = bl_clamp(i, 0, h - 1);
+      const uint32_t* row = reinterpret_cast<const uint32_t*>(src_line + yi * src_stride) + x;
+      for (int c = 0; c < 4; c++) {
+        uint32_t p = row[c];
+        acc[c][0] += (p >>  0) & 0xFF;
+        acc[c][1] += (p >>  8) & 0xFF;
+        acc[c][2] += (p >> 16) & 0xFF;
+        acc[c][3] += (p >> 24) & 0xFF;
+      }
+    }
+
+    for (int y = 0; y < h; y++) {
+      uint32_t* dst_row = reinterpret_cast<uint32_t*>(dst_line + y * dst_stride) + x;
+
+      // Write 4 output pixels.
+      for (int c = 0; c < 4; c++) {
+        dst_row[c] = ((acc[c][0] * reciprocal) >> 24)       |
+                     (((acc[c][1] * reciprocal) >> 24) << 8) |
+                     (((acc[c][2] * reciprocal) >> 24) << 16)|
+                     (((acc[c][3] * reciprocal) >> 24) << 24);
+      }
+
+      // Slide window.
+      int yi_add = bl_min(y + radius + 1, h - 1);
+      int yi_sub = bl_max(y - radius, 0);
+
+      const uint32_t* row_add = reinterpret_cast<const uint32_t*>(src_line + yi_add * src_stride) + x;
+      const uint32_t* row_sub = reinterpret_cast<const uint32_t*>(src_line + yi_sub * src_stride) + x;
+
+      for (int c = 0; c < 4; c++) {
+        uint32_t p_add = row_add[c];
+        uint32_t p_sub = row_sub[c];
+        acc[c][0] += ((p_add >>  0) & 0xFF) - ((p_sub >>  0) & 0xFF);
+        acc[c][1] += ((p_add >>  8) & 0xFF) - ((p_sub >>  8) & 0xFF);
+        acc[c][2] += ((p_add >> 16) & 0xFF) - ((p_sub >> 16) & 0xFF);
+        acc[c][3] += ((p_add >> 24) & 0xFF) - ((p_sub >> 24) & 0xFF);
+      }
+    }
+  }
+
+  // Scalar remainder for last 0-3 columns.
+  for (; x < w; x++) {
     const uint8_t* src_col = src_line + x * 4;
 
-    // Initialize accumulator with clamped top edge.
     uint32_t acc_r = 0, acc_g = 0, acc_b = 0, acc_a = 0;
     for (int i = -radius; i <= radius; i++) {
       int yi = bl_clamp(i, 0, h - 1);
@@ -840,29 +890,70 @@ BL_API_IMPL BLResult bl_image_filter(BLImageCore* dst, const BLImageCore* src, B
   }
 
   if (type == BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR) {
+    BLImagePrivateImpl* si = get_impl(actual_src);
+    int orig_w = si->size.w;
+    int orig_h = si->size.h;
+
+    // Downscale optimization: for large radii, blur a smaller image then upscale back.
+    // Large blur radii destroy the fine detail that downscaling loses, so the visual result
+    // is nearly identical. This is the standard approach used by browsers (CSS backdrop-filter),
+    // game engines, and compositing software.
+    constexpr double kDownscaleThreshold = 8.0;
+    constexpr int kMinDownscaledSize = 16;
+
+    double effective_radius = radius;
+    bool use_downscale = (radius > kDownscaleThreshold && orig_w > kMinDownscaledSize * 2 && orig_h > kMinDownscaledSize * 2);
+    BLImage downscaled;
+    int scale_factor = 1;
+
+    if (use_downscale) {
+      // Choose scale factor: halve until radius fits within threshold, max 8x downscale.
+      while (effective_radius > kDownscaleThreshold && scale_factor < 8 &&
+             orig_w / (scale_factor * 2) >= kMinDownscaledSize &&
+             orig_h / (scale_factor * 2) >= kMinDownscaledSize) {
+        scale_factor *= 2;
+        effective_radius /= 2.0;
+      }
+
+      BLSizeI small_size(orig_w / scale_factor, orig_h / scale_factor);
+      BL_PROPAGATE(BLImage::scale(downscaled, actual_src->dcast(), small_size, BL_IMAGE_SCALE_FILTER_BILINEAR));
+      actual_src = static_cast<const BLImageCore*>(&downscaled);
+    }
+
     // Gaussian blur approximated via 3-pass box blur (W3C CSS standard approach).
-    double sigma = radius / 3.0;
+    double sigma = effective_radius / 3.0;
     int widths[3];
     bl::ImageFilter::gaussian_box_widths(sigma, widths);
 
-    // Pass 1: src → dst
-    int r1 = widths[0] / 2;
-    BL_PROPAGATE(bl::ImageFilter::box_blur_pass(dst->dcast(), actual_src->dcast(), r1));
+    BLImage blurred;
 
-    // Pass 2: dst → dst (in-place via temp)
+    // Pass 1: src → blurred
+    int r1 = widths[0] / 2;
+    BL_PROPAGATE(bl::ImageFilter::box_blur_pass(blurred, actual_src->dcast(), r1));
+
+    // Pass 2: blurred → blurred (in-place via temp)
     int r2 = widths[1] / 2;
     if (r2 > 0) {
-      BLImage pass2_src;
-      pass2_src = dst->dcast();
-      BL_PROPAGATE(bl::ImageFilter::box_blur_pass(dst->dcast(), pass2_src, r2));
+      BLImage pass_src;
+      pass_src = blurred;
+      BL_PROPAGATE(bl::ImageFilter::box_blur_pass(blurred, pass_src, r2));
     }
 
-    // Pass 3: dst → dst (in-place via temp)
+    // Pass 3: blurred → blurred (in-place via temp)
     int r3 = widths[2] / 2;
     if (r3 > 0) {
-      BLImage pass3_src;
-      pass3_src = dst->dcast();
-      BL_PROPAGATE(bl::ImageFilter::box_blur_pass(dst->dcast(), pass3_src, r3));
+      BLImage pass_src;
+      pass_src = blurred;
+      BL_PROPAGATE(bl::ImageFilter::box_blur_pass(blurred, pass_src, r3));
+    }
+
+    // Upscale back to original dimensions if downscaled.
+    if (use_downscale && scale_factor > 1) {
+      BLSizeI orig_size(orig_w, orig_h);
+      BL_PROPAGATE(BLImage::scale(dst->dcast(), blurred, orig_size, BL_IMAGE_SCALE_FILTER_BILINEAR));
+    }
+    else {
+      dst->dcast() = blurred;
     }
 
     return BL_SUCCESS;

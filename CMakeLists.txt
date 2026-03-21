@@ -1128,6 +1128,12 @@ if (BLEND2D_TEST)
     endif()
   endforeach()
 
+  blend2d_add_target(blur_benchmark EXECUTABLE
+    SOURCES    blur_benchmark.cpp
+    LIBRARIES  blend2d::blend2d
+    CFLAGS     ${BLEND2D_PRIVATE_CFLAGS}
+    CFLAGS_REL ${BLEND2D_PRIVATE_CFLAGS_REL})
+
   # Blend2D Generator
   # -----------------
 
