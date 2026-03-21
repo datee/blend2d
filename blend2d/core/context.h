@@ -524,6 +524,7 @@ struct BLContextVirt BL_CLASS_INHERITS(BLObjectVirt) {
 
   BLResult (BL_CDECL* clip_to_rect_i             )(BLContextImpl* impl, const BLRectI* rect) BL_NOEXCEPT_C;
   BLResult (BL_CDECL* clip_to_rect_d             )(BLContextImpl* impl, const BLRect* rect) BL_NOEXCEPT_C;
+  BLResult (BL_CDECL* clip_to_path              )(BLContextImpl* impl, const BLPathCore* path) BL_NOEXCEPT_C;
   BLResult (BL_CDECL* restore_clipping           )(BLContextImpl* impl) BL_NOEXCEPT_C;
 
   BLResult (BL_CDECL* clear_all                  )(BLContextImpl* impl) BL_NOEXCEPT_C;
@@ -726,6 +727,7 @@ BL_API BLResult BL_CDECL bl_context_set_stroke_options(BLContextCore* self, cons
 
 BL_API BLResult BL_CDECL bl_context_clip_to_rect_i(BLContextCore* self, const BLRectI* rect) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_context_clip_to_rect_d(BLContextCore* self, const BLRect* rect) BL_NOEXCEPT_C;
+BL_API BLResult BL_CDECL bl_context_clip_to_path(BLContextCore* self, const BLPathCore* path) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_context_restore_clipping(BLContextCore* self) BL_NOEXCEPT_C;
 
 BL_API BLResult BL_CDECL bl_context_clear_all(BLContextCore* self) BL_NOEXCEPT_C;
@@ -2023,6 +2025,11 @@ public:
 
   BL_INLINE_NODEBUG BLResult clip_to_rect(double x, double y, double w, double h) noexcept {
     return clip_to_rect(BLRect(x, y, w, h));
+  }
+
+  //! Clips to a path. The clip region becomes the intersection of the current clip and the filled path.
+  BL_INLINE_NODEBUG BLResult clip_to_path(const BLPath& path) noexcept {
+    BL_CONTEXT_CALL_RETURN(clip_to_path, impl, &path);
   }
 
   //! \}

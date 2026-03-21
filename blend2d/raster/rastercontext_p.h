@@ -132,6 +132,13 @@ public:
   //! Destination image data.
   BLImageData dst_data;
 
+  //! Active clip mask (A8 format, valid when clip_mode == BL_CLIP_MODE_MASK).
+  BLImageCore clip_mask;
+  //! Active clip path geometry.
+  BLPathCore clip_path;
+  //! Offset of clip mask relative to target image origin.
+  BLPointI clip_mask_offset;
+
   //! Minimum safe coordinate for integral transformation (scaled by 256.0 or 65536.0).
   double fp_min_safe_coord_d;
   //! Maximum safe coordinate for integral transformation (scaled by 256.0 or 65536.0).
@@ -168,6 +175,9 @@ public:
       saved_state_limit(0),
       dst_image{},
       dst_data{},
+      clip_mask{},
+      clip_path{},
+      clip_mask_offset{},
       fp_min_safe_coord_d(0.0),
       fp_max_safe_coord_d(0.0) {
 
@@ -178,6 +188,10 @@ public:
     transform_ptrs[BL_CONTEXT_STYLE_TRANSFORM_MODE_USER] = &internal_state.final_transform;
     transform_ptrs[BL_CONTEXT_STYLE_TRANSFORM_MODE_META] = &internal_state.meta_transform;
     transform_ptrs[BL_CONTEXT_STYLE_TRANSFORM_MODE_NONE] = &bl::TransformInternal::identity_transform;
+
+    // Initialize clip mask/path as proper BLObject instances.
+    bl_image_init(&clip_mask);
+    bl_path_init(&clip_path);
   }
 
   BL_INLINE ~BLRasterContextImpl() noexcept {

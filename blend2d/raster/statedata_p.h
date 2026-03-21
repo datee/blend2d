@@ -129,6 +129,13 @@ struct alignas(16) SavedState {
   //! Final clip_box (double).
   BLBox final_clip_box_d;
 
+  //! Clip mask image (A8 format, valid when clip_mode == BL_CLIP_MODE_MASK).
+  BLImageCore clip_mask;
+  //! Clip path geometry (valid when clip_mode == BL_CLIP_MODE_MASK).
+  BLPathCore clip_path;
+  //! Offset of clip mask relative to the target image origin.
+  BLPointI clip_mask_offset;
+
   //! Integral translation, if possible.
   BLPointI translation_i;
   //! Meta or final transformation matrix (depending on flags).

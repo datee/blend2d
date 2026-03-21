@@ -802,6 +802,13 @@ BL_API_IMPL BLResult bl_context_clip_to_rect_d(BLContextCore* self, const BLRect
   return impl->virt->clip_to_rect_d(impl, rect);
 }
 
+BL_API_IMPL BLResult bl_context_clip_to_path(BLContextCore* self, const BLPathCore* path) noexcept {
+  BL_ASSERT(self->_d.is_context());
+  BLContextImpl* impl = self->_impl();
+
+  return impl->virt->clip_to_path(impl, path);
+}
+
 BL_API_IMPL BLResult bl_context_restore_clipping(BLContextCore* self) noexcept {
   BL_ASSERT(self->_d.is_context());
   BLContextImpl* impl = self->_impl();

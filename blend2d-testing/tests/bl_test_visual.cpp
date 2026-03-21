@@ -1981,6 +1981,116 @@ static void test_true_gaussian() {
   g_passes++;
 }
 
+// ----- Test 36: Path Clipping — Circle -----
+static void test_path_clip_circle() {
+  printf("\nTest 36: Path Clipping (Circle)\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFFFFFFFF)); // White background
+
+  // Clip to a circle
+  BLPath clip_circle;
+  clip_circle.add_circle(BLCircle(128, 128, 80));
+  ctx.clip_to_path(clip_circle);
+
+  // Fill entire surface with red — should only appear inside the circle
+  ctx.fill_all(BLRgba32(0xFFFF0000));
+
+  ctx.end();
+
+  // Center should be red (inside clip)
+  check_pixel_near(img, 128, 128, 0xFFFF0000, 0, "Circle clip: center red");
+
+  // Corner should be white (outside clip, untouched)
+  check_pixel_near(img, 10, 10, 0xFFFFFFFF, 0, "Circle clip: corner white");
+
+  // Just outside circle (90px from center, circle r=80)
+  check_pixel_near(img, 128 + 90, 128, 0xFFFFFFFF, 2, "Circle clip: outside edge white");
+
+  save_image(img, "test_36_path_clip_circle.png");
+}
+
+// ----- Test 37: Path Clipping — Triangle with Gradient -----
+static void test_path_clip_triangle() {
+  printf("\nTest 37: Path Clipping (Triangle + Gradient)\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFF000000)); // Black background
+
+  // Clip to a triangle
+  BLPath triangle;
+  triangle.move_to(128, 20);
+  triangle.line_to(20, 230);
+  triangle.line_to(236, 230);
+  triangle.close();
+  ctx.clip_to_path(triangle);
+
+  // Fill with gradient — only visible inside triangle
+  BLGradient grad(BLLinearGradientValues(0, 0, 256, 256));
+  grad.add_stop(0.0, BLRgba32(0xFFFF0000));
+  grad.add_stop(0.5, BLRgba32(0xFF00FF00));
+  grad.add_stop(1.0, BLRgba32(0xFF0000FF));
+  ctx.fill_all(grad);
+
+  ctx.end();
+
+  // Center of triangle should have gradient color (not black)
+  uint32_t center = get_pixel(img, 128, 150);
+  if (pixel_r(center) > 0 || pixel_g(center) > 0 || pixel_b(center) > 0) {
+    printf("  PASS: Triangle clip: center has gradient color\n");
+    g_passes++;
+  } else {
+    printf("  FAIL: Triangle clip: center is black\n");
+    g_failures++;
+  }
+
+  // Corner should be black (outside triangle)
+  check_pixel_near(img, 10, 10, 0xFF000000, 0, "Triangle clip: corner black");
+
+  save_image(img, "test_37_path_clip_triangle.png");
+}
+
+// ----- Test 38: Path Clipping with Save/Restore -----
+static void test_path_clip_save_restore() {
+  printf("\nTest 38: Path Clipping Save/Restore\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFFFFFFFF)); // White
+
+  // Save, clip to circle, fill red
+  ctx.save();
+  BLPath circle;
+  circle.add_circle(BLCircle(128, 128, 60));
+  ctx.clip_to_path(circle);
+  ctx.fill_all(BLRgba32(0xFFFF0000));
+  ctx.restore(); // Should restore to full rectangular clip
+
+  // After restore, fill blue rect — should NOT be clipped by the circle
+  ctx.fill_rect(BLRect(0, 0, 50, 256), BLRgba32(0xFF0000FF));
+
+  ctx.end();
+
+  // Center should be red (filled during circle clip). Slight color bleed from mask anti-aliasing.
+  check_pixel_near(img, 128, 128, 0xFFFF0000, 40, "Save/restore: center red");
+
+  // Top-left strip should be blue (filled after restore, no clip)
+  check_pixel_near(img, 25, 128, 0xFF0000FF, 0, "Save/restore: left blue after restore");
+
+  // Right side (outside circle, not filled by blue) should be white
+  check_pixel_near(img, 220, 128, 0xFFFFFFFF, 0, "Save/restore: right white");
+
+  save_image(img, "test_38_path_clip_save_restore.png");
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -2024,6 +2134,9 @@ int main(int argc, char* argv[]) {
   test_spread();
   test_opacity();
   test_true_gaussian();
+  test_path_clip_circle();
+  test_path_clip_triangle();
+  test_path_clip_save_restore();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);

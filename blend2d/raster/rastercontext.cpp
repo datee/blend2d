@@ -829,9 +829,6 @@ static BL_INLINE void reset_clipping_to_meta_clip_box(BLRasterContextImpl* ctx_i
 }
 
 static BL_INLINE void restore_clipping_from_state(BLRasterContextImpl* ctx_impl, SavedState* saved_state) noexcept {
-  // TODO: [Rendering Context] Path-based clipping.
-  // When clip_mode is BL_CLIP_MODE_MASK, also restore the clip mask (rasterized path → A8 image)
-  // and the clip path geometry from saved_state. Requires adding BLPath and BLImage fields to SavedState.
   ctx_impl->internal_state.final_clip_box_d = saved_state->final_clip_box_d;
   ctx_impl->internal_state.final_clip_box_i.reset(
     Math::trunc_to_int(ctx_impl->final_clip_box_d().x0),
@@ -845,6 +842,14 @@ static BL_INLINE void restore_clipping_from_state(BLRasterContextImpl* ctx_impl,
     ctx_impl->final_clip_box_d().y0 * fp_scale,
     ctx_impl->final_clip_box_d().x1 * fp_scale,
     ctx_impl->final_clip_box_d().y1 * fp_scale));
+
+  // Restore path-based clip mask if the saved state used BL_CLIP_MODE_MASK.
+  ctx_impl->sync_work_data.clip_mode = saved_state->clip_mode;
+  if (saved_state->clip_mode == BL_CLIP_MODE_MASK) {
+    bl_image_assign_weak(&ctx_impl->clip_mask, &saved_state->clip_mask);
+    bl_path_assign_weak(&ctx_impl->clip_path, &saved_state->clip_path);
+    ctx_impl->clip_mask_offset = saved_state->clip_mask_offset;
+  }
 }
 
 // bl::RasterEngine - ContextImpl - Internals - Clip Utilities
@@ -1545,6 +1550,11 @@ static BL_INLINE void save_core_state(BLRasterContextImpl* ctx_impl, SavedState*
   state->style_type[1] = ctx_impl->internal_state.style_type[1];
 
   state->clip_mode = ctx_impl->clip_mode();
+  if (state->clip_mode == BL_CLIP_MODE_MASK) {
+    bl_image_assign_weak(&state->clip_mask, &ctx_impl->clip_mask);
+    bl_path_assign_weak(&state->clip_path, &ctx_impl->clip_path);
+    state->clip_mask_offset = ctx_impl->clip_mask_offset;
+  }
   state->prev_context_flags = ctx_impl->context_flags & ~(ContextFlags::kPreservedFlags);
 
   state->transform_types_packed = ctx_impl->internal_state.transform_types_packed;
@@ -2285,6 +2295,96 @@ Use64Bit:
   return BL_SUCCESS;
 }
 
+static BLResult BL_CDECL clip_to_path_impl(BLContextImpl* base_impl, const BLPathCore* path) noexcept {
+  BLRasterContextImpl* ctx_impl = static_cast<BLRasterContextImpl*>(base_impl);
+  const BLPath& clip_path = path->dcast();
+
+  // Get the path's bounding box in user coordinates.
+  BLBox path_bounds;
+  if (clip_path.get_bounding_box(&path_bounds) != BL_SUCCESS || path_bounds.x0 >= path_bounds.x1 || path_bounds.y0 >= path_bounds.y1) {
+    // Empty path — clip to nothing.
+    on_before_clip_box_change(ctx_impl);
+    ctx_impl->internal_state.final_clip_box_d.reset();
+    ctx_impl->internal_state.final_clip_box_i.reset();
+    ctx_impl->set_final_clip_box_fixed_d(BLBox(0, 0, 0, 0));
+    ctx_impl->context_flags |= ContextFlags::kNoClipRect;
+    ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_ALIGNED_RECT;
+    ctx_impl->context_flags &= ~(ContextFlags::kWeakStateClip | ContextFlags::kSharedStateFill);
+    return BL_SUCCESS;
+  }
+
+  // Transform path bounds to final (device) coordinates.
+  BLBox device_bounds = TransformInternal::map_box(ctx_impl->final_transform(), path_bounds);
+
+  // Intersect with current clip box.
+  BLBox clipped_bounds;
+  if (!Geometry::intersect(clipped_bounds, ctx_impl->final_clip_box_d(), device_bounds)) {
+    // No intersection — empty clip.
+    on_before_clip_box_change(ctx_impl);
+    ctx_impl->internal_state.final_clip_box_d.reset();
+    ctx_impl->internal_state.final_clip_box_i.reset();
+    ctx_impl->set_final_clip_box_fixed_d(BLBox(0, 0, 0, 0));
+    ctx_impl->context_flags |= ContextFlags::kNoClipRect;
+    ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_ALIGNED_RECT;
+    ctx_impl->context_flags &= ~(ContextFlags::kWeakStateClip | ContextFlags::kSharedStateFill);
+    return BL_SUCCESS;
+  }
+
+  // Compute integer bounding box for the clip mask.
+  int mask_x0 = Math::trunc_to_int(clipped_bounds.x0);
+  int mask_y0 = Math::trunc_to_int(clipped_bounds.y0);
+  int mask_x1 = Math::ceil_to_int(clipped_bounds.x1);
+  int mask_y1 = Math::ceil_to_int(clipped_bounds.y1);
+  int mask_w = mask_x1 - mask_x0;
+  int mask_h = mask_y1 - mask_y0;
+
+  if (mask_w <= 0 || mask_h <= 0) {
+    on_before_clip_box_change(ctx_impl);
+    ctx_impl->internal_state.final_clip_box_d.reset();
+    ctx_impl->internal_state.final_clip_box_i.reset();
+    ctx_impl->set_final_clip_box_fixed_d(BLBox(0, 0, 0, 0));
+    ctx_impl->context_flags |= ContextFlags::kNoClipRect;
+    ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_ALIGNED_RECT;
+    ctx_impl->context_flags &= ~(ContextFlags::kWeakStateClip | ContextFlags::kSharedStateFill);
+    return BL_SUCCESS;
+  }
+
+  // Step 1: Create A8 mask image and rasterize the clip path into it.
+  BLImage mask_image(mask_w, mask_h, BL_FORMAT_A8);
+  {
+    BLContext mask_ctx(mask_image);
+    mask_ctx.clear_all();
+
+    // Translate so that the mask's origin aligns with mask_x0, mask_y0 in device space.
+    // Apply the context's full transform, then shift by the mask offset.
+    mask_ctx.set_transform(ctx_impl->final_transform());
+    mask_ctx.translate(-double(mask_x0), -double(mask_y0));
+
+    // Fill the path with full alpha to generate the coverage mask.
+    mask_ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    mask_ctx.fill_path(clip_path, BLRgba32(0xFF000000));
+    mask_ctx.end();
+  }
+
+  // Step 2: Save state and update clipping.
+  on_before_clip_box_change(ctx_impl);
+
+  // Store the mask and path in the context.
+  bl_image_assign_weak(&ctx_impl->clip_mask, static_cast<const BLImageCore*>(&mask_image));
+  bl_path_assign_weak(&ctx_impl->clip_path, path);
+  ctx_impl->clip_mask_offset.reset(mask_x0, mask_y0);
+
+  // Update clip box to the path's bounding box.
+  ctx_impl->internal_state.final_clip_box_d = clipped_bounds;
+  ctx_impl->internal_state.final_clip_box_i.reset(mask_x0, mask_y0, mask_x1, mask_y1);
+  ctx_impl->set_final_clip_box_fixed_d(clipped_bounds * ctx_impl->fp_scale_d());
+
+  ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_MASK;
+  ctx_impl->context_flags &= ~(ContextFlags::kWeakStateClip | ContextFlags::kSharedStateFill | ContextFlags::kNoClipRect);
+
+  return BL_SUCCESS;
+}
+
 static BLResult BL_CDECL restore_clipping_impl(BLContextImpl* base_impl) noexcept {
   BLRasterContextImpl* ctx_impl = static_cast<BLRasterContextImpl*>(base_impl);
   SavedState* state = ctx_impl->saved_state;
@@ -2729,12 +2829,8 @@ BL_INLINE BLResult fill_clipped_box_f<kAsync>(BLRasterContextImpl* ctx_impl, Dis
 // bl::RasterEngine - ContextImpl - Internals - Fill All
 // =====================================================
 
-template<RenderingMode kRM>
-static BL_NOINLINE BLResult fill_all(BLRasterContextImpl* ctx_impl, DispatchInfo di, DispatchStyle ds) noexcept {
-  return ctx_impl->clip_mode() == BL_CLIP_MODE_ALIGNED_RECT
-    ? fill_clipped_box_a<kRM>(ctx_impl, di, ds, ctx_impl->final_clip_box_i())
-    : fill_clipped_box_u<kRM>(ctx_impl, di, ds, ctx_impl->final_clip_box_fixed_i());
-}
+// NOTE: fill_all() is defined after fill_clipped_box_masked_a() below,
+// because it needs to call fill_clipped_box_masked_a() when clip_mode == MASK.
 
 // bl::RasterEngine - ContextImpl - Internals - Fill Clipped Edges
 // ===============================================================
@@ -3183,6 +3279,27 @@ BL_NOINLINE BLResult fill_clipped_box_masked_a<kAsync>(
   return enqueue_command(ctx_impl, command, qy0, ds.fetch_data, [&](RenderCommand* command) noexcept {
     ObjectInternal::retain_impl<RCMode::kMaybe>(command->_payload.box_mask_a.mask_image_i.ptr);
   });
+}
+
+// bl::RasterEngine - ContextImpl - Internals - Fill All
+// =====================================================
+
+template<RenderingMode kRM>
+static BL_NOINLINE BLResult fill_all(BLRasterContextImpl* ctx_impl, DispatchInfo di, DispatchStyle ds) noexcept {
+  if (ctx_impl->clip_mode() == BL_CLIP_MODE_MASK) {
+    // The mask offset tells fill_box_masked_a where in the mask image the fill box starts.
+    // clip_mask_offset is the absolute position of the mask in device space.
+    // The fill box starts at final_clip_box_i, so the offset into the mask is (0, 0) when
+    // the fill box == the clip box (which is the case for fill_all).
+    BLPointI mask_read_offset(
+      ctx_impl->final_clip_box_i().x0 - ctx_impl->clip_mask_offset.x,
+      ctx_impl->final_clip_box_i().y0 - ctx_impl->clip_mask_offset.y);
+    return fill_clipped_box_masked_a<kRM>(ctx_impl, di, ds,
+      ctx_impl->final_clip_box_i(), &ctx_impl->clip_mask, mask_read_offset);
+  }
+  return ctx_impl->clip_mode() == BL_CLIP_MODE_ALIGNED_RECT
+    ? fill_clipped_box_a<kRM>(ctx_impl, di, ds, ctx_impl->final_clip_box_i())
+    : fill_clipped_box_u<kRM>(ctx_impl, di, ds, ctx_impl->final_clip_box_fixed_i());
 }
 
 // bl::RasterEngine - ContextImpl - Internals - Stroke Unclipped Path
@@ -4568,6 +4685,7 @@ static void init_virt(BLContextVirt* virt) noexcept {
 
   virt->clip_to_rect_i              = clip_to_rect_i_impl;
   virt->clip_to_rect_d              = clip_to_rect_d_impl;
+  virt->clip_to_path               = clip_to_path_impl;
   virt->restore_clipping            = restore_clipping_impl;
 
   virt->clear_all                   = clear_all_impl<kRM>;
