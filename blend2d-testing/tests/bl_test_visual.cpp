@@ -2370,6 +2370,125 @@ static void test_path_clip_blit() {
   save_image(img, "test_44_diamond_clip_blit.png");
 }
 
+// ----- Test 45: Color Matrix -----
+static void test_color_matrix() {
+  printf("\nTest 45: Color Matrix\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    BLGradient grad(BLLinearGradientValues(0, 0, 256, 0));
+    grad.add_stop(0.0, BLRgba32(0xFFFF0000));
+    grad.add_stop(0.5, BLRgba32(0xFF00FF00));
+    grad.add_stop(1.0, BLRgba32(0xFF0000FF));
+    ctx.fill_all(grad);
+    ctx.end();
+  }
+  save_image(src, "test_45a_cmatrix_source.png");
+
+  // Identity matrix — should produce identical output
+  {
+    double identity[20] = {
+      1, 0, 0, 0, 0,
+      0, 1, 0, 0, 0,
+      0, 0, 1, 0, 0,
+      0, 0, 0, 1, 0
+    };
+    BLImage result;
+    BLImage::color_matrix(result, src, identity);
+    check_pixel_near(result, 20, 128, get_pixel(src, 20, 128), 2, "Identity matrix = unchanged");
+  }
+
+  // Grayscale matrix (BT.709)
+  {
+    double gray[20] = {
+      0.2126, 0.7152, 0.0722, 0, 0,
+      0.2126, 0.7152, 0.0722, 0, 0,
+      0.2126, 0.7152, 0.0722, 0, 0,
+      0,      0,      0,      1, 0
+    };
+    BLImage result;
+    BLImage::color_matrix(result, src, gray);
+    save_image(result, "test_45b_cmatrix_grayscale.png");
+
+    uint32_t gc = get_pixel(result, 128, 128);
+    int diff = bl_abs(int(pixel_r(gc)) - int(pixel_g(gc))) + bl_abs(int(pixel_g(gc)) - int(pixel_b(gc)));
+    if (diff < 5) {
+      printf("  PASS: Grayscale matrix neutral (diff=%d)\n", diff); g_passes++;
+    } else {
+      printf("  FAIL: Grayscale not neutral (diff=%d)\n", diff); g_failures++;
+    }
+  }
+
+  // Invert matrix
+  {
+    double invert[20] = {
+     -1, 0, 0, 0, 1,
+      0,-1, 0, 0, 1,
+      0, 0,-1, 0, 1,
+      0, 0, 0, 1, 0
+    };
+    BLImage result;
+    BLImage::color_matrix(result, src, invert);
+    save_image(result, "test_45c_cmatrix_invert.png");
+
+    // Red should become cyan (0, 255, 255)
+    uint32_t p = get_pixel(result, 20, 128);
+    if (pixel_r(p) < 50 && pixel_g(p) > 200 && pixel_b(p) > 200) {
+      printf("  PASS: Invert: red → cyan (R=%u G=%u B=%u)\n",
+             unsigned(pixel_r(p)), unsigned(pixel_g(p)), unsigned(pixel_b(p))); g_passes++;
+    } else {
+      printf("  FAIL: Invert wrong (R=%u G=%u B=%u)\n",
+             unsigned(pixel_r(p)), unsigned(pixel_g(p)), unsigned(pixel_b(p))); g_failures++;
+    }
+  }
+
+  // Sepia matrix
+  {
+    double sepia[20] = {
+      0.393, 0.769, 0.189, 0, 0,
+      0.349, 0.686, 0.168, 0, 0,
+      0.272, 0.534, 0.131, 0, 0,
+      0,     0,     0,     1, 0
+    };
+    BLImage result;
+    BLImage::color_matrix(result, src, sepia);
+    save_image(result, "test_45d_cmatrix_sepia.png");
+
+    // Sepia should produce warm brownish tones
+    uint32_t p = get_pixel(result, 128, 128);
+    if (pixel_r(p) > pixel_b(p)) {
+      printf("  PASS: Sepia: warm tones (R=%u > B=%u)\n",
+             unsigned(pixel_r(p)), unsigned(pixel_b(p))); g_passes++;
+    } else {
+      printf("  FAIL: Sepia not warm\n"); g_failures++;
+    }
+  }
+
+  // Swap R and B channels
+  {
+    double swap_rb[20] = {
+      0, 0, 1, 0, 0,
+      0, 1, 0, 0, 0,
+      1, 0, 0, 0, 0,
+      0, 0, 0, 1, 0
+    };
+    BLImage result;
+    BLImage::color_matrix(result, src, swap_rb);
+    save_image(result, "test_45e_cmatrix_swap_rb.png");
+
+    // Left (was red) should now be blue
+    uint32_t p = get_pixel(result, 20, 128);
+    if (pixel_b(p) > 200 && pixel_r(p) < 30) {
+      printf("  PASS: Swap R↔B: left is blue (R=%u B=%u)\n",
+             unsigned(pixel_r(p)), unsigned(pixel_b(p))); g_passes++;
+    } else {
+      printf("  FAIL: Swap R↔B wrong (R=%u B=%u)\n",
+             unsigned(pixel_r(p)), unsigned(pixel_b(p))); g_failures++;
+    }
+  }
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -2422,6 +2541,7 @@ int main(int argc, char* argv[]) {
   test_path_clip_fill_path();
   test_path_clip_gradient();
   test_path_clip_blit();
+  test_color_matrix();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);

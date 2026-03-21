@@ -78,9 +78,11 @@ BL_DEFINE_ENUM(BLImageEffectType) {
   BL_IMAGE_EFFECT_TYPE_SATURATION = 5,
   //! Flash-style tint: lerp between original color and tint color. `radius` = amount (0=original, 1=solid tint).
   BL_IMAGE_EFFECT_TYPE_TINT = 6,
+  //! Color matrix: 5x4 matrix applied per-pixel. Uses `color_matrix` pointer in options.
+  BL_IMAGE_EFFECT_TYPE_COLOR_MATRIX = 7,
 
   //! Maximum value of `BLImageEffectType`.
-  BL_IMAGE_EFFECT_TYPE_MAX_VALUE = 6
+  BL_IMAGE_EFFECT_TYPE_MAX_VALUE = 7
 
   BL_FORCE_ENUM_UINT32(BL_IMAGE_EFFECT_TYPE)
 };
@@ -112,6 +114,8 @@ struct BLImageEffectOptions {
   double spread;
   //! Strength/intensity multiplier for glow. Values > 1.0 make the glow brighter without changing size.
   double strength;
+  //! Pointer to a 5x4 color matrix (20 doubles) for COLOR_MATRIX effect. Row-major: [R_out][G_out][B_out][A_out] x [R G B A 1].
+  const double* color_matrix;
 
 #ifdef __cplusplus
   BL_INLINE void reset() noexcept { *this = BLImageEffectOptions{}; }
@@ -651,6 +655,14 @@ public:
     BLImageEffectOptions opts{};
     opts.type = BL_IMAGE_EFFECT_TYPE_SATURATION;
     opts.radius = factor;
+    return bl_image_apply_effect(&dst, &src, &opts);
+  }
+
+  //! Convenience: Apply a 5x4 color matrix transform. Matrix is 20 doubles in row-major order.
+  static BL_INLINE_NODEBUG BLResult color_matrix(BLImage& dst, const BLImage& src, const double matrix[20]) noexcept {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_COLOR_MATRIX;
+    opts.color_matrix = matrix;
     return bl_image_apply_effect(&dst, &src, &opts);
   }
 

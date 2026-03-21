@@ -1280,6 +1280,82 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
     return BL_SUCCESS;
   }
 
+  if (options->type == BL_IMAGE_EFFECT_TYPE_COLOR_MATRIX) {
+    if (!options->color_matrix)
+      return bl_make_error(BL_ERROR_INVALID_VALUE);
+
+    BLImagePrivateImpl* si = get_impl(src);
+    int w = si->size.w;
+    int h = si->size.h;
+
+    const double* m = options->color_matrix;
+
+    // Convert matrix to fixed-point (8.8) for speed.
+    int32_t mi[20];
+    for (int i = 0; i < 20; i++)
+      mi[i] = int32_t(m[i] * 256.0 + 0.5);
+
+    BLImage src_copy;
+    if (dst == src) {
+      src_copy = src->dcast();
+      BL_PROPAGATE(bl_image_create(dst, w, h, BLFormat(si->format)));
+    } else {
+      BL_PROPAGATE(bl_image_create(dst, w, h, BLFormat(si->format)));
+    }
+
+    BLImageData src_data, dst_data;
+    if (src_copy.width() > 0) src_copy.get_data(&src_data);
+    else src->dcast().get_data(&src_data);
+    dst->dcast().make_mutable(&dst_data);
+
+    const uint8_t* sp = static_cast<const uint8_t*>(src_data.pixel_data);
+    uint8_t* dp = static_cast<uint8_t*>(dst_data.pixel_data);
+
+    if (si->format == BL_FORMAT_PRGB32 || si->format == BL_FORMAT_XRGB32) {
+      for (int y = 0; y < h; y++) {
+        const uint32_t* srow = reinterpret_cast<const uint32_t*>(sp);
+        uint32_t* drow = reinterpret_cast<uint32_t*>(dp);
+        for (int x = 0; x < w; x++) {
+          uint32_t p = srow[x];
+          uint32_t a = (p >> 24) & 0xFF;
+          uint32_t r, g, b;
+
+          // Unpremultiply.
+          if (a > 0 && a < 255) {
+            r = bl_min(((p >> 16) & 0xFF) * 255 / a, 255u);
+            g = bl_min(((p >>  8) & 0xFF) * 255 / a, 255u);
+            b = bl_min(((p >>  0) & 0xFF) * 255 / a, 255u);
+          } else {
+            r = (p >> 16) & 0xFF; g = (p >> 8) & 0xFF; b = p & 0xFF;
+          }
+
+          // Apply 5x4 matrix: [R' G' B' A'] = M * [R G B A 1]
+          int32_t nr = (int32_t(r) * mi[0] + int32_t(g) * mi[1] + int32_t(b) * mi[2] + int32_t(a) * mi[3] + mi[4] * 255) >> 8;
+          int32_t ng = (int32_t(r) * mi[5] + int32_t(g) * mi[6] + int32_t(b) * mi[7] + int32_t(a) * mi[8] + mi[9] * 255) >> 8;
+          int32_t nb = (int32_t(r) * mi[10]+ int32_t(g) * mi[11]+ int32_t(b) * mi[12]+ int32_t(a) * mi[13]+ mi[14]* 255) >> 8;
+          int32_t na = (int32_t(r) * mi[15]+ int32_t(g) * mi[16]+ int32_t(b) * mi[17]+ int32_t(a) * mi[18]+ mi[19]* 255) >> 8;
+
+          nr = bl_clamp(nr, 0, 255);
+          ng = bl_clamp(ng, 0, 255);
+          nb = bl_clamp(nb, 0, 255);
+          na = bl_clamp(na, 0, 255);
+
+          // Repremultiply.
+          if (na < 255) {
+            nr = nr * na / 255;
+            ng = ng * na / 255;
+            nb = nb * na / 255;
+          }
+          drow[x] = uint32_t(nb) | (uint32_t(ng) << 8) | (uint32_t(nr) << 16) | (uint32_t(na) << 24);
+        }
+        sp += src_data.stride;
+        dp += dst_data.stride;
+      }
+    }
+
+    return BL_SUCCESS;
+  }
+
   return bl_make_error(BL_ERROR_INVALID_VALUE);
 }
 
