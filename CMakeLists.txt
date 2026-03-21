@@ -1089,6 +1089,13 @@ if (BLEND2D_TEST)
     CFLAGS_DBG ${BLEND2D_PRIVATE_CFLAGS_DBG}
     CFLAGS_REL ${BLEND2D_PRIVATE_CFLAGS_REL})
 
+  blend2d_add_target(bl_test_visual EXECUTABLE
+    SOURCES    blend2d-testing/tests/bl_test_visual.cpp
+    LIBRARIES  blend2d::blend2d
+    CFLAGS     ${BLEND2D_PRIVATE_CFLAGS}
+    CFLAGS_DBG ${BLEND2D_PRIVATE_CFLAGS_DBG}
+    CFLAGS_REL ${BLEND2D_PRIVATE_CFLAGS_REL})
+
   # Add a limited version of 'bl_bench' in case we are building tests, but not demos.
   if (NOT BLEND2D_DEMOS)
     blend2d_add_target(bl_bench EXECUTABLE
