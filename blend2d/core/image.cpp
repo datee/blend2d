@@ -856,7 +856,7 @@ static BLResult box_blur_pass(BLImage& dst, const BLImage& src, int radius) noex
 } // {ImageFilter}
 } // {bl}
 
-BL_API_IMPL BLResult bl_image_filter(BLImageCore* dst, const BLImageCore* src, BLImageFilterType type, double radius) noexcept {
+BL_API_IMPL BLResult bl_image_filter(BLImageCore* dst, const BLImageCore* src, BLImageFilterType type, double radius, double quality) noexcept {
   using namespace bl::ImageInternal;
 
   BL_ASSERT(dst->_d.is_image());
@@ -898,17 +898,27 @@ BL_API_IMPL BLResult bl_image_filter(BLImageCore* dst, const BLImageCore* src, B
     // Large blur radii destroy the fine detail that downscaling loses, so the visual result
     // is nearly identical. This is the standard approach used by browsers (CSS backdrop-filter),
     // game engines, and compositing software.
-    constexpr double kDownscaleThreshold = 8.0;
+    //
+    // Quality controls the downscale threshold:
+    //   quality=0.0 → threshold=4  (aggressive downscale, fastest)
+    //   quality=0.5 → threshold=8  (balanced, default)
+    //   quality=1.0 → no downscale (full resolution, highest quality)
+    double q = bl_clamp(quality, 0.0, 1.0);
     constexpr int kMinDownscaledSize = 16;
 
     double effective_radius = radius;
-    bool use_downscale = (radius > kDownscaleThreshold && orig_w > kMinDownscaledSize * 2 && orig_h > kMinDownscaledSize * 2);
+    bool use_downscale = (q < 1.0) && (orig_w > kMinDownscaledSize * 2) && (orig_h > kMinDownscaledSize * 2);
     BLImage downscaled;
     int scale_factor = 1;
 
     if (use_downscale) {
-      // Choose scale factor: halve until radius fits within threshold, max 8x downscale.
-      while (effective_radius > kDownscaleThreshold && scale_factor < 8 &&
+      // Higher quality → higher threshold before downscaling kicks in.
+      // q=0.0 → threshold=4, q=0.5 → threshold=8, q=0.9 → threshold=40
+      double threshold = 4.0 + 36.0 * q;
+      int max_scale = (q < 0.25) ? 16 : (q < 0.5) ? 8 : (q < 0.75) ? 4 : 2;
+
+      // Choose scale factor: halve until radius fits within threshold.
+      while (effective_radius > threshold && scale_factor < max_scale &&
              orig_w / (scale_factor * 2) >= kMinDownscaledSize &&
              orig_h / (scale_factor * 2) >= kMinDownscaledSize) {
         scale_factor *= 2;

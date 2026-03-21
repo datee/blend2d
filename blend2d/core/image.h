@@ -176,7 +176,7 @@ BL_API BLResult BL_CDECL bl_image_make_mutable(BLImageCore* self, BLImageData* d
 BL_API BLResult BL_CDECL bl_image_convert(BLImageCore* self, BLFormat format) BL_NOEXCEPT_C;
 BL_API bool BL_CDECL bl_image_equals(const BLImageCore* a, const BLImageCore* b) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_scale(BLImageCore* dst, const BLImageCore* src, const BLSizeI* size, BLImageScaleFilter filter) BL_NOEXCEPT_C;
-BL_API BLResult BL_CDECL bl_image_filter(BLImageCore* dst, const BLImageCore* src, BLImageFilterType type, double radius) BL_NOEXCEPT_C;
+BL_API BLResult BL_CDECL bl_image_filter(BLImageCore* dst, const BLImageCore* src, BLImageFilterType type, double radius, double quality) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_read_from_file(BLImageCore* self, const char* file_name, const BLArrayCore* codecs) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_read_from_data(BLImageCore* self, const void* data, size_t size, const BLArrayCore* codecs) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_write_to_file(const BLImageCore* self, const char* file_name, const BLImageCodecCore* codec) BL_NOEXCEPT_C;
@@ -530,8 +530,13 @@ public:
   //!   - `BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR` - Gaussian blur approximated via 3-pass box blur.
   //!
   //! The `radius` parameter controls the blur strength in pixels. A radius of 0 produces no effect.
-  static BL_INLINE_NODEBUG BLResult filter(BLImage& dst, const BLImage& src, BLImageFilterType type, double radius) noexcept {
-    return bl_image_filter(&dst, &src, type, radius);
+  //!
+  //! The `quality` parameter (0.0 to 1.0) controls the speed/quality tradeoff:
+  //!   - 0.0 = fastest (aggressive downscale, may lose fine detail)
+  //!   - 0.5 = balanced (default, moderate downscale for large radii)
+  //!   - 1.0 = highest quality (no downscale, full resolution blur)
+  static BL_INLINE_NODEBUG BLResult filter(BLImage& dst, const BLImage& src, BLImageFilterType type, double radius, double quality = 0.5) noexcept {
+    return bl_image_filter(&dst, &src, type, radius, quality);
   }
 };
 
