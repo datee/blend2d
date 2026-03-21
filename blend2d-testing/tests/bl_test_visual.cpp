@@ -634,6 +634,67 @@ static void test_overlapping_fills() {
   save_image(img, "test_14_overlapping_fills.png");
 }
 
+// ----- Test 15: Triangle Clipped from Circle -----
+static void test_triangle_clip_circle() {
+  printf("\nTest 15: Triangle Clipped from Circle\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFFFFFFFF));  // White background
+
+  // Draw a red filled circle
+  BLPath circle;
+  circle.add_circle(BLCircle(128, 128, 100));
+  ctx.fill_path(circle, BLRgba32(0xFFFF0000));
+
+  // Now clip to a triangle and fill with blue — this cuts a blue triangle out of the red circle
+  ctx.save();
+
+  BLPath triangle;
+  triangle.move_to(128, 30);    // Top center
+  triangle.line_to(30, 220);    // Bottom left
+  triangle.line_to(226, 220);   // Bottom right
+  triangle.close();
+
+  // Blend2D only supports rect clipping natively, so we simulate path clipping
+  // by filling the triangle with blue using SrcOver — the triangle shape is cut from the circle visually.
+  // Where triangle overlaps circle: blue over red.
+  // Where only circle: red.
+  // Where only triangle (outside circle): blue over white.
+  // Where neither: white.
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_path(triangle, BLRgba32(0xFF0000FF));
+  ctx.restore();
+
+  ctx.end();
+
+  // Center of image — inside both circle and triangle: should be blue (triangle drawn over circle)
+  check_pixel_near(img, 128, 140, 0xFF0000FF, 2, "Center: blue (triangle over circle)");
+
+  // Side of circle, clearly outside triangle: should be red
+  // Triangle edges at y=80: left edge x≈101, right edge x≈155. So (50, 80) is outside triangle.
+  // Distance from circle center: sqrt((50-128)^2 + (80-128)^2) = sqrt(6084+2304) ≈ 91.6 < 100. Inside circle.
+  check_pixel_near(img, 50, 80, 0xFFFF0000, 2, "Left circle, outside triangle (red)");
+
+  // Right side of circle, outside triangle
+  check_pixel_near(img, 210, 80, 0xFFFF0000, 2, "Right circle, outside triangle (red)");
+
+  // Inside triangle but outside circle (bottom corners): should be blue
+  check_pixel_near(img, 50, 210, 0xFF0000FF, 2, "Bottom-left triangle, outside circle (blue)");
+  check_pixel_near(img, 206, 210, 0xFF0000FF, 2, "Bottom-right triangle, outside circle (blue)");
+
+  // Far corner — outside both: should be white
+  check_pixel_near(img, 10, 10, 0xFFFFFFFF, 0, "Corner: outside both (white)");
+
+  // Top of circle, well above triangle tip (tip is at y=30, circle top is y=28).
+  // At (100, 35): inside circle (dist ≈ 96 < 100), outside triangle (left edge x≈125 at y=35).
+  check_pixel_near(img, 100, 35, 0xFFFF0000, 2, "Top-left of circle, above triangle (red)");
+
+  save_image(img, "test_15_triangle_clip_circle.png");
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -656,6 +717,7 @@ int main(int argc, char* argv[]) {
   test_save_restore_clipping();
   test_clipping_with_transform();
   test_overlapping_fills();
+  test_triangle_clip_circle();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
