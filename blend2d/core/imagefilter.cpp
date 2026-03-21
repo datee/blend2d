@@ -370,22 +370,31 @@ BL_API_IMPL BLResult bl_image_filter(BLImageCore* dst, const BLImageCore* src, B
       }
     }
 
-    // 3-pass box blur approximation.
+    // 3-pass box blur approximation using ping-pong buffers to avoid repeated allocation.
     double sigma = effective_radius / 3.0;
     int widths[3];
     bl::gaussian_box_widths(sigma, widths);
 
-    BLImage blurred;
-    BL_PROPAGATE(bl::box_blur_pass(blurred, actual_src->dcast(), widths[0] / 2));
+    BLImage buf_a, buf_b;
 
+    // Pass 1: src → buf_a
+    BL_PROPAGATE(bl::box_blur_pass(buf_a, actual_src->dcast(), widths[0] / 2));
+
+    // Pass 2: buf_a → buf_b (reuses buf_b allocation)
     if (widths[1] / 2 > 0) {
-      BLImage tmp = blurred;
-      BL_PROPAGATE(bl::box_blur_pass(blurred, tmp, widths[1] / 2));
+      BL_PROPAGATE(bl::box_blur_pass(buf_b, buf_a, widths[1] / 2));
+    }
+    else {
+      buf_b = buf_a;
     }
 
+    // Pass 3: buf_b → buf_a (reuses buf_a allocation)
+    BLImage& blurred = buf_a;
     if (widths[2] / 2 > 0) {
-      BLImage tmp = blurred;
-      BL_PROPAGATE(bl::box_blur_pass(blurred, tmp, widths[2] / 2));
+      BL_PROPAGATE(bl::box_blur_pass(buf_a, buf_b, widths[2] / 2));
+    }
+    else {
+      blurred = buf_b;
     }
 
     // Upscale back if downscaled.
@@ -420,7 +429,16 @@ void bl_image_filter_rt_init(BLRuntimeContext* rt) noexcept {
     bl::image_filter_ops.box_blur_vert[BL_FORMAT_PRGB32] = bl_image_filter_box_blur_vert_prgb32_sse2;
     bl::image_filter_ops.box_blur_vert[BL_FORMAT_XRGB32] = bl_image_filter_box_blur_vert_prgb32_sse2;
   }
-#else
+#endif
+
+#ifdef BL_BUILD_OPT_AVX2
+  if (bl_runtime_has_avx2(rt)) {
+    bl::image_filter_ops.box_blur_vert[BL_FORMAT_PRGB32] = bl_image_filter_box_blur_vert_prgb32_avx2;
+    bl::image_filter_ops.box_blur_vert[BL_FORMAT_XRGB32] = bl_image_filter_box_blur_vert_prgb32_avx2;
+  }
+#endif
+
+#if !defined(BL_BUILD_OPT_SSE2) && !defined(BL_BUILD_OPT_AVX2)
   bl_unused(rt);
 #endif
 }

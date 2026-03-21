@@ -160,6 +160,7 @@ set(BLEND2D_SRC_LIST
   blend2d/core/imageencoder.cpp
   blend2d/core/imageencoder.h
   blend2d/core/imagefilter.cpp
+  blend2d/core/imagefilter_avx2.cpp
   blend2d/core/imagefilter_p.h
   blend2d/core/imagefilter_sse2.cpp
   blend2d/core/imagefilter_test.cpp

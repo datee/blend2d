@@ -66,6 +66,11 @@ BL_HIDDEN void bl_image_filter_box_blur_vert_prgb32_sse2(
   const uint8_t* BL_RESTRICT src, intptr_t src_stride,
   int w, int h, int y_start, int y_end, int radius) noexcept;
 
+BL_HIDDEN void bl_image_filter_box_blur_vert_prgb32_avx2(
+  uint8_t* BL_RESTRICT dst, intptr_t dst_stride,
+  const uint8_t* BL_RESTRICT src, intptr_t src_stride,
+  int w, int h, int y_start, int y_end, int radius) noexcept;
+
 // Runtime registration.
 BL_HIDDEN void bl_image_filter_rt_init(BLRuntimeContext* rt) noexcept;
 
