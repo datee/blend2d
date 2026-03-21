@@ -576,6 +576,13 @@ BL_API_IMPL BLResult bl_image_scale(BLImageCore* dst, const BLImageCore* src, co
 // bl::Image - API - Filter
 // ========================
 
+#if defined(BL_TARGET_OPT_SSE2)
+  #include <emmintrin.h>
+  #if defined(BL_TARGET_OPT_SSE4_1)
+    #include <smmintrin.h>
+  #endif
+#endif
+
 namespace bl {
 namespace ImageFilter {
 
@@ -603,6 +610,7 @@ static void gaussian_box_widths(double sigma, int widths[3]) noexcept {
 
 // Single-pass horizontal box blur for PRGB32 (4 bytes per pixel).
 // Uses sliding window accumulator — O(width) regardless of radius.
+// Process 2 rows at once to improve instruction-level parallelism.
 static void box_blur_horz_prgb32(
     uint8_t* BL_RESTRICT dst_line, intptr_t dst_stride,
     const uint8_t* BL_RESTRICT src_line, intptr_t src_stride,
@@ -611,12 +619,54 @@ static void box_blur_horz_prgb32(
   int kernel = radius * 2 + 1;
   uint32_t reciprocal = (1u << 24) / uint32_t(kernel);
 
-  for (int y = 0; y < h; y++) {
+  // Process 2 rows at a time for better ILP (independent data, same instruction stream).
+  int y = 0;
+  for (; y + 2 <= h; y += 2) {
+    const uint32_t* src0 = reinterpret_cast<const uint32_t*>(src_line);
+    const uint32_t* src1 = reinterpret_cast<const uint32_t*>(src_line + src_stride);
+    uint32_t* dst0 = reinterpret_cast<uint32_t*>(dst_line);
+    uint32_t* dst1 = reinterpret_cast<uint32_t*>(dst_line + dst_stride);
+
+    uint32_t acc0_b = 0, acc0_g = 0, acc0_r = 0, acc0_a = 0;
+    uint32_t acc1_b = 0, acc1_g = 0, acc1_r = 0, acc1_a = 0;
+
+    for (int i = -radius; i <= radius; i++) {
+      int xi = bl_clamp(i, 0, w - 1);
+      uint32_t p0 = src0[xi], p1 = src1[xi];
+      acc0_b += (p0 >>  0) & 0xFF; acc1_b += (p1 >>  0) & 0xFF;
+      acc0_g += (p0 >>  8) & 0xFF; acc1_g += (p1 >>  8) & 0xFF;
+      acc0_r += (p0 >> 16) & 0xFF; acc1_r += (p1 >> 16) & 0xFF;
+      acc0_a += (p0 >> 24) & 0xFF; acc1_a += (p1 >> 24) & 0xFF;
+    }
+
+    for (int x = 0; x < w; x++) {
+      dst0[x] = ((acc0_b * reciprocal) >> 24)       | (((acc0_g * reciprocal) >> 24) << 8) |
+                (((acc0_r * reciprocal) >> 24) << 16)| (((acc0_a * reciprocal) >> 24) << 24);
+      dst1[x] = ((acc1_b * reciprocal) >> 24)       | (((acc1_g * reciprocal) >> 24) << 8) |
+                (((acc1_r * reciprocal) >> 24) << 16)| (((acc1_a * reciprocal) >> 24) << 24);
+
+      int xi_add = bl_min(x + radius + 1, w - 1);
+      int xi_sub = bl_max(x - radius, 0);
+
+      uint32_t a0 = src0[xi_add], s0 = src0[xi_sub];
+      uint32_t a1 = src1[xi_add], s1 = src1[xi_sub];
+
+      acc0_b += ((a0 >>  0) & 0xFF) - ((s0 >>  0) & 0xFF); acc1_b += ((a1 >>  0) & 0xFF) - ((s1 >>  0) & 0xFF);
+      acc0_g += ((a0 >>  8) & 0xFF) - ((s0 >>  8) & 0xFF); acc1_g += ((a1 >>  8) & 0xFF) - ((s1 >>  8) & 0xFF);
+      acc0_r += ((a0 >> 16) & 0xFF) - ((s0 >> 16) & 0xFF); acc1_r += ((a1 >> 16) & 0xFF) - ((s1 >> 16) & 0xFF);
+      acc0_a += ((a0 >> 24) & 0xFF) - ((s0 >> 24) & 0xFF); acc1_a += ((a1 >> 24) & 0xFF) - ((s1 >> 24) & 0xFF);
+    }
+
+    src_line += src_stride * 2;
+    dst_line += dst_stride * 2;
+  }
+
+  // Handle last row if height is odd.
+  for (; y < h; y++) {
     const uint32_t* src = reinterpret_cast<const uint32_t*>(src_line);
     uint32_t* dst = reinterpret_cast<uint32_t*>(dst_line);
 
-    // Initialize accumulator with clamped left edge.
-    uint32_t acc_r = 0, acc_g = 0, acc_b = 0, acc_a = 0;
+    uint32_t acc_b = 0, acc_g = 0, acc_r = 0, acc_a = 0;
     for (int i = -radius; i <= radius; i++) {
       int xi = bl_clamp(i, 0, w - 1);
       uint32_t p = src[xi];
@@ -627,19 +677,12 @@ static void box_blur_horz_prgb32(
     }
 
     for (int x = 0; x < w; x++) {
-      // Write output pixel.
-      dst[x] = ((acc_b * reciprocal) >> 24)       |
-               (((acc_g * reciprocal) >> 24) << 8) |
-               (((acc_r * reciprocal) >> 24) << 16)|
-               (((acc_a * reciprocal) >> 24) << 24);
+      dst[x] = ((acc_b * reciprocal) >> 24)       | (((acc_g * reciprocal) >> 24) << 8) |
+               (((acc_r * reciprocal) >> 24) << 16)| (((acc_a * reciprocal) >> 24) << 24);
 
-      // Slide window: add entering pixel, subtract leaving pixel.
       int xi_add = bl_min(x + radius + 1, w - 1);
       int xi_sub = bl_max(x - radius, 0);
-
-      uint32_t p_add = src[xi_add];
-      uint32_t p_sub = src[xi_sub];
-
+      uint32_t p_add = src[xi_add], p_sub = src[xi_sub];
       acc_b += ((p_add >>  0) & 0xFF) - ((p_sub >>  0) & 0xFF);
       acc_g += ((p_add >>  8) & 0xFF) - ((p_sub >>  8) & 0xFF);
       acc_r += ((p_add >> 16) & 0xFF) - ((p_sub >> 16) & 0xFF);
@@ -651,67 +694,13 @@ static void box_blur_horz_prgb32(
   }
 }
 
-// Single-pass vertical box blur for PRGB32.
-// Processes 4 pixels (16 bytes) at a time to improve cache utilization — each row read
-// fills a cache line instead of touching 4 bytes of one. Falls back to scalar for remainder.
-static void box_blur_vert_prgb32(
+// Scalar vertical box blur — fallback for non-SSE2 or remainder columns.
+static void box_blur_vert_prgb32_scalar(
     uint8_t* BL_RESTRICT dst_line, intptr_t dst_stride,
     const uint8_t* BL_RESTRICT src_line, intptr_t src_stride,
-    int w, int h, int radius) noexcept {
+    int x_start, int x_end, int h, int radius, uint32_t reciprocal) noexcept {
 
-  int kernel = radius * 2 + 1;
-  uint32_t reciprocal = (1u << 24) / uint32_t(kernel);
-
-  // Process 4 columns at a time (16 bytes = good cache line utilization).
-  int x = 0;
-  for (; x + 4 <= w; x += 4) {
-    // 4 independent column accumulators, each with 4 channels = 16 accumulators.
-    uint32_t acc[4][4] = {}; // [col][channel: B,G,R,A]
-
-    // Initialize accumulators.
-    for (int i = -radius; i <= radius; i++) {
-      int yi = bl_clamp(i, 0, h - 1);
-      const uint32_t* row = reinterpret_cast<const uint32_t*>(src_line + yi * src_stride) + x;
-      for (int c = 0; c < 4; c++) {
-        uint32_t p = row[c];
-        acc[c][0] += (p >>  0) & 0xFF;
-        acc[c][1] += (p >>  8) & 0xFF;
-        acc[c][2] += (p >> 16) & 0xFF;
-        acc[c][3] += (p >> 24) & 0xFF;
-      }
-    }
-
-    for (int y = 0; y < h; y++) {
-      uint32_t* dst_row = reinterpret_cast<uint32_t*>(dst_line + y * dst_stride) + x;
-
-      // Write 4 output pixels.
-      for (int c = 0; c < 4; c++) {
-        dst_row[c] = ((acc[c][0] * reciprocal) >> 24)       |
-                     (((acc[c][1] * reciprocal) >> 24) << 8) |
-                     (((acc[c][2] * reciprocal) >> 24) << 16)|
-                     (((acc[c][3] * reciprocal) >> 24) << 24);
-      }
-
-      // Slide window.
-      int yi_add = bl_min(y + radius + 1, h - 1);
-      int yi_sub = bl_max(y - radius, 0);
-
-      const uint32_t* row_add = reinterpret_cast<const uint32_t*>(src_line + yi_add * src_stride) + x;
-      const uint32_t* row_sub = reinterpret_cast<const uint32_t*>(src_line + yi_sub * src_stride) + x;
-
-      for (int c = 0; c < 4; c++) {
-        uint32_t p_add = row_add[c];
-        uint32_t p_sub = row_sub[c];
-        acc[c][0] += ((p_add >>  0) & 0xFF) - ((p_sub >>  0) & 0xFF);
-        acc[c][1] += ((p_add >>  8) & 0xFF) - ((p_sub >>  8) & 0xFF);
-        acc[c][2] += ((p_add >> 16) & 0xFF) - ((p_sub >> 16) & 0xFF);
-        acc[c][3] += ((p_add >> 24) & 0xFF) - ((p_sub >> 24) & 0xFF);
-      }
-    }
-  }
-
-  // Scalar remainder for last 0-3 columns.
-  for (; x < w; x++) {
+  for (int x = x_start; x < x_end; x++) {
     const uint8_t* src_col = src_line + x * 4;
 
     uint32_t acc_r = 0, acc_g = 0, acc_b = 0, acc_a = 0;
@@ -743,6 +732,103 @@ static void box_blur_vert_prgb32(
       acc_r += ((p_add >> 16) & 0xFF) - ((p_sub >> 16) & 0xFF);
       acc_a += ((p_add >> 24) & 0xFF) - ((p_sub >> 24) & 0xFF);
     }
+  }
+}
+
+// Single-pass vertical box blur for PRGB32.
+static void box_blur_vert_prgb32(
+    uint8_t* BL_RESTRICT dst_line, intptr_t dst_stride,
+    const uint8_t* BL_RESTRICT src_line, intptr_t src_stride,
+    int w, int h, int radius) noexcept {
+
+  int kernel = radius * 2 + 1;
+  uint32_t reciprocal = (1u << 24) / uint32_t(kernel);
+  int x = 0;
+
+#if defined(BL_TARGET_OPT_SSE2)
+  // SSE2 vertical pass: process 4 pixels (16 bytes) per iteration using 128-bit SIMD.
+  // Each pixel is unpacked to 4x32-bit accumulators (one per channel).
+  // We maintain 4 sets of accumulators (acc_b, acc_g, acc_r, acc_a) each holding 4 columns.
+  __m128i v_mask_ff = _mm_set1_epi32(0xFF);
+  __m128i v_recip = _mm_set1_epi32(int(reciprocal));
+
+  for (; x + 4 <= w; x += 4) {
+    __m128i acc_b = _mm_setzero_si128();
+    __m128i acc_g = _mm_setzero_si128();
+    __m128i acc_r = _mm_setzero_si128();
+    __m128i acc_a = _mm_setzero_si128();
+
+    // Initialize accumulators.
+    for (int i = -radius; i <= radius; i++) {
+      int yi = bl_clamp(i, 0, h - 1);
+      __m128i pixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src_line + yi * src_stride + x * 4));
+
+      acc_b = _mm_add_epi32(acc_b, _mm_and_si128(pixels, v_mask_ff));
+      acc_g = _mm_add_epi32(acc_g, _mm_and_si128(_mm_srli_epi32(pixels, 8), v_mask_ff));
+      acc_r = _mm_add_epi32(acc_r, _mm_and_si128(_mm_srli_epi32(pixels, 16), v_mask_ff));
+      acc_a = _mm_add_epi32(acc_a, _mm_srli_epi32(pixels, 24));
+    }
+
+    for (int y = 0; y < h; y++) {
+      // Compute (acc * reciprocal) >> 24 for each channel.
+      __m128i out_b, out_g, out_r, out_a;
+
+#if defined(BL_TARGET_OPT_SSE4_1)
+      // SSE4.1: _mm_mullo_epi32 does 4x 32-bit multiply in one instruction.
+      out_b = _mm_srli_epi32(_mm_mullo_epi32(acc_b, v_recip), 24);
+      out_g = _mm_srli_epi32(_mm_mullo_epi32(acc_g, v_recip), 24);
+      out_r = _mm_srli_epi32(_mm_mullo_epi32(acc_r, v_recip), 24);
+      out_a = _mm_srli_epi32(_mm_mullo_epi32(acc_a, v_recip), 24);
+#else
+      // SSE2 fallback: _mm_mul_epu32 only multiplies lanes 0,2. Need two passes + merge.
+      {
+        __m128i dword_mask = _mm_set_epi32(0, (int)0xFFFFFFFF, 0, (int)0xFFFFFFFF);
+
+        #define SSE2_MUL_U32(OUT, ACC) do { \
+          __m128i lo = _mm_srli_epi64(_mm_mul_epu32(ACC, v_recip), 24); \
+          __m128i hi = _mm_srli_epi64(_mm_mul_epu32(_mm_srli_si128(ACC, 4), v_recip), 24); \
+          OUT = _mm_or_si128(_mm_and_si128(lo, dword_mask), _mm_slli_si128(_mm_and_si128(hi, dword_mask), 4)); \
+        } while (0)
+
+        SSE2_MUL_U32(out_b, acc_b);
+        SSE2_MUL_U32(out_g, acc_g);
+        SSE2_MUL_U32(out_r, acc_r);
+        SSE2_MUL_U32(out_a, acc_a);
+
+        #undef SSE2_MUL_U32
+      }
+#endif
+
+      // Combine channels: B | (G << 8) | (R << 16) | (A << 24)
+      __m128i result = _mm_or_si128(
+        _mm_or_si128(out_b, _mm_slli_epi32(out_g, 8)),
+        _mm_or_si128(_mm_slli_epi32(out_r, 16), _mm_slli_epi32(out_a, 24)));
+
+      _mm_storeu_si128(reinterpret_cast<__m128i*>(dst_line + y * dst_stride + x * 4), result);
+
+      // Slide window.
+      int yi_add = bl_min(y + radius + 1, h - 1);
+      int yi_sub = bl_max(y - radius, 0);
+
+      __m128i p_add = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src_line + yi_add * src_stride + x * 4));
+      __m128i p_sub = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src_line + yi_sub * src_stride + x * 4));
+
+      __m128i diff_b = _mm_sub_epi32(_mm_and_si128(p_add, v_mask_ff), _mm_and_si128(p_sub, v_mask_ff));
+      __m128i diff_g = _mm_sub_epi32(_mm_and_si128(_mm_srli_epi32(p_add, 8), v_mask_ff), _mm_and_si128(_mm_srli_epi32(p_sub, 8), v_mask_ff));
+      __m128i diff_r = _mm_sub_epi32(_mm_and_si128(_mm_srli_epi32(p_add, 16), v_mask_ff), _mm_and_si128(_mm_srli_epi32(p_sub, 16), v_mask_ff));
+      __m128i diff_a = _mm_sub_epi32(_mm_srli_epi32(p_add, 24), _mm_srli_epi32(p_sub, 24));
+
+      acc_b = _mm_add_epi32(acc_b, diff_b);
+      acc_g = _mm_add_epi32(acc_g, diff_g);
+      acc_r = _mm_add_epi32(acc_r, diff_r);
+      acc_a = _mm_add_epi32(acc_a, diff_a);
+    }
+  }
+#endif // BL_TARGET_OPT_SSE2
+
+  // Scalar remainder.
+  if (x < w) {
+    box_blur_vert_prgb32_scalar(dst_line, dst_stride, src_line, src_stride, x, w, h, radius, reciprocal);
   }
 }
 
