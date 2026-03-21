@@ -1429,6 +1429,303 @@ static void test_saturation() {
   g_passes++;
 }
 
+// ----- Test 27: Drop Shadow Variants -----
+static void test_drop_shadow_variants() {
+  printf("\nTest 27: Drop Shadow Variants\n");
+
+  BLImage src(200, 200, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+    ctx.fill_round_rect(BLRoundRect(30, 30, 140, 100, 12), BLRgba32(0xFF3388FF));
+    ctx.end();
+  }
+
+  // Outer shadow (default)
+  BLImage outer;
+  BLImage::drop_shadow(outer, src, 10.0, 6.0, 6.0, BLRgba32(0xAA000000));
+  save_image(outer, "test_27a_shadow_outer.png");
+
+  // Outer knockout
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+    opts.radius = 10.0; opts.quality = 0.5;
+    opts.offset_x = 6.0; opts.offset_y = 6.0;
+    opts.color = 0xAA000000;
+    opts.flags = BL_IMAGE_EFFECT_FLAG_KNOCKOUT;
+    BLImage ko;
+    BLImage::apply_effect(ko, src, opts);
+    save_image(ko, "test_27b_shadow_outer_ko.png");
+
+    // Should have shadow but no blue rect
+    uint32_t c = get_pixel(ko, 100, 80);
+    if (pixel_b(c) < 100) {
+      printf("  PASS: Shadow knockout: no blue rect (B=%u)\n", unsigned(pixel_b(c)));
+      g_passes++;
+    } else {
+      printf("  FAIL: Shadow knockout: blue still present (B=%u)\n", unsigned(pixel_b(c)));
+      g_failures++;
+    }
+  }
+
+  // Inner shadow
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+    opts.radius = 8.0; opts.quality = 0.5;
+    opts.offset_x = 3.0; opts.offset_y = 3.0;
+    opts.color = 0xCC000000;
+    opts.flags = BL_IMAGE_EFFECT_FLAG_INNER;
+    BLImage inner;
+    BLImage::apply_effect(inner, src, opts);
+    save_image(inner, "test_27c_shadow_inner.png");
+
+    // Outside shape should be transparent
+    uint32_t outside = get_pixel(inner, 5, 5);
+    if (pixel_a(outside) == 0) {
+      printf("  PASS: Inner shadow: outside transparent\n"); g_passes++;
+    } else {
+      printf("  FAIL: Inner shadow: outside not transparent (A=%u)\n", unsigned(pixel_a(outside))); g_failures++;
+    }
+  }
+
+  // Inner shadow knockout
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+    opts.radius = 8.0; opts.quality = 0.5;
+    opts.offset_x = 3.0; opts.offset_y = 3.0;
+    opts.color = 0xCC000000;
+    opts.flags = BL_IMAGE_EFFECT_FLAG_INNER | BL_IMAGE_EFFECT_FLAG_KNOCKOUT;
+    BLImage inner_ko;
+    BLImage::apply_effect(inner_ko, src, opts);
+    save_image(inner_ko, "test_27d_shadow_inner_ko.png");
+
+    // Center should be mostly transparent (original removed)
+    uint32_t c = get_pixel(inner_ko, 100, 80);
+    if (pixel_a(c) < 100) {
+      printf("  PASS: Inner shadow KO: center transparent (A=%u)\n", unsigned(pixel_a(c)));
+      g_passes++;
+    } else {
+      printf("  FAIL: Inner shadow KO: center opaque (A=%u)\n", unsigned(pixel_a(c)));
+      g_failures++;
+    }
+  }
+}
+
+// ----- Test 28: Brightness/Contrast Edge Cases -----
+static void test_brightness_contrast_edges() {
+  printf("\nTest 28: Brightness/Contrast Edge Cases\n");
+
+  BLImage src(128, 128, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.fill_all(BLRgba32(0xFF808080)); // Mid-gray
+    ctx.end();
+  }
+
+  // Max brightness → should be white
+  BLImage white;
+  BLImage::brightness_contrast(white, src, 1.0, 0.0);
+  uint32_t wc = get_pixel(white, 64, 64);
+  if (pixel_r(wc) == 255 && pixel_g(wc) == 255 && pixel_b(wc) == 255) {
+    printf("  PASS: Max brightness = white\n"); g_passes++;
+  } else {
+    printf("  FAIL: Max brightness not white (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(wc)), unsigned(pixel_g(wc)), unsigned(pixel_b(wc))); g_failures++;
+  }
+
+  // Min brightness → should be black
+  BLImage black;
+  BLImage::brightness_contrast(black, src, -1.0, 0.0);
+  uint32_t bc = get_pixel(black, 64, 64);
+  if (pixel_r(bc) == 0 && pixel_g(bc) == 0 && pixel_b(bc) == 0) {
+    printf("  PASS: Min brightness = black\n"); g_passes++;
+  } else {
+    printf("  FAIL: Min brightness not black (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(bc)), unsigned(pixel_g(bc)), unsigned(pixel_b(bc))); g_failures++;
+  }
+
+  // Zero brightness, zero contrast → unchanged
+  BLImage unchanged;
+  BLImage::brightness_contrast(unchanged, src, 0.0, 0.0);
+  check_pixel_near(unchanged, 64, 64, 0xFF808080, 1, "Zero B/C = unchanged");
+
+  // In-place operation
+  BLImage inplace(128, 128, BL_FORMAT_PRGB32);
+  { BLContext ctx(inplace); ctx.fill_all(BLRgba32(0xFF404040)); ctx.end(); }
+  BLImage::brightness_contrast(inplace, inplace, 0.2, 0.0);
+  uint32_t ipc = get_pixel(inplace, 64, 64);
+  if (pixel_r(ipc) > 0x40) {
+    printf("  PASS: In-place brightness works (R=%u > 0x40)\n", unsigned(pixel_r(ipc)));
+    g_passes++;
+  } else {
+    printf("  FAIL: In-place brightness broken (R=%u)\n", unsigned(pixel_r(ipc)));
+    g_failures++;
+  }
+
+  // With semi-transparent pixels (premultiplied alpha handling)
+  BLImage alpha_src(128, 128, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(alpha_src);
+    ctx.clear_all();
+    ctx.fill_rect(BLRect(20, 20, 88, 88), BLRgba32(0x80FF0000)); // 50% red
+    ctx.end();
+  }
+  BLImage alpha_bright;
+  BLImage::brightness_contrast(alpha_bright, alpha_src, 0.3, 0.0);
+  uint32_t ap = get_pixel(alpha_bright, 64, 64);
+  // Alpha should be preserved
+  if (pixel_a(ap) > 0x70 && pixel_a(ap) < 0x90) {
+    printf("  PASS: Alpha preserved after brightness (A=%u)\n", unsigned(pixel_a(ap)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Alpha changed (A=%u, expected ~0x80)\n", unsigned(pixel_a(ap)));
+    g_failures++;
+  }
+}
+
+// ----- Test 29: Saturation Edge Cases -----
+static void test_saturation_edges() {
+  printf("\nTest 29: Saturation Edge Cases\n");
+
+  // Pure red source
+  BLImage red(128, 128, BL_FORMAT_PRGB32);
+  { BLContext ctx(red); ctx.fill_all(BLRgba32(0xFFFF0000)); ctx.end(); }
+
+  // Grayscale of pure red
+  BLImage gray;
+  BLImage::saturation(gray, red, 0.0);
+  uint32_t gc = get_pixel(gray, 64, 64);
+  // Should be neutral gray (R=G=B), luminance of red ≈ 54 (BT.709: 0.2126)
+  if (pixel_r(gc) == pixel_g(gc) && pixel_g(gc) == pixel_b(gc)) {
+    printf("  PASS: Pure red → grayscale is neutral (val=%u)\n", unsigned(pixel_r(gc)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Not neutral (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(gc)), unsigned(pixel_g(gc)), unsigned(pixel_b(gc)));
+    g_failures++;
+  }
+
+  // Saturation=1 should be unchanged
+  BLImage same;
+  BLImage::saturation(same, red, 1.0);
+  check_pixel_near(same, 64, 64, 0xFFFF0000, 1, "Saturation 1.0 = unchanged red");
+
+  // Already gray image → saturation change should have no effect
+  BLImage gray_src(128, 128, BL_FORMAT_PRGB32);
+  { BLContext ctx(gray_src); ctx.fill_all(BLRgba32(0xFF808080)); ctx.end(); }
+  BLImage gray_sat;
+  BLImage::saturation(gray_sat, gray_src, 2.0);
+  check_pixel_near(gray_sat, 64, 64, 0xFF808080, 2, "Saturating gray stays gray");
+
+  // Saturation with white → should stay white
+  BLImage white_src(128, 128, BL_FORMAT_PRGB32);
+  { BLContext ctx(white_src); ctx.fill_all(BLRgba32(0xFFFFFFFF)); ctx.end(); }
+  BLImage white_sat;
+  BLImage::saturation(white_sat, white_src, 0.0);
+  check_pixel_near(white_sat, 64, 64, 0xFFFFFFFF, 1, "Desaturate white = white");
+
+  // Saturation with black → should stay black
+  BLImage black_src(128, 128, BL_FORMAT_PRGB32);
+  { BLContext ctx(black_src); ctx.fill_all(BLRgba32(0xFF000000)); ctx.end(); }
+  BLImage black_sat;
+  BLImage::saturation(black_sat, black_src, 0.0);
+  check_pixel_near(black_sat, 64, 64, 0xFF000000, 1, "Desaturate black = black");
+}
+
+// ----- Test 30: Complete Effect Showcase -----
+static void test_effect_showcase() {
+  printf("\nTest 30: Complete Effect Showcase\n");
+
+  // Create a nice source image with multiple elements
+  BLImage src(300, 200, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    // Dark gradient background
+    BLGradient bg(BLLinearGradientValues(0, 0, 300, 200));
+    bg.add_stop(0.0, BLRgba32(0xFF1A1A2E));
+    bg.add_stop(1.0, BLRgba32(0xFF16213E));
+    ctx.fill_all(bg);
+
+    // Colored shapes
+    BLPath c1; c1.add_circle(BLCircle(80, 100, 45));
+    ctx.fill_path(c1, BLRgba32(0xFFE94560));
+
+    BLPath c2; c2.add_circle(BLCircle(220, 100, 45));
+    ctx.fill_path(c2, BLRgba32(0xFF0F3460));
+
+    ctx.fill_round_rect(BLRoundRect(120, 60, 60, 80, 10), BLRgba32(0xFFFFD700));
+    ctx.end();
+  }
+  save_image(src, "test_30a_showcase_source.png");
+
+  // Apply each effect type
+  BLImage blur_result;
+  BLImage::blur(blur_result, src, 8.0);
+  save_image(blur_result, "test_30b_showcase_blur.png");
+
+  BLImage shadow_result;
+  BLImage::drop_shadow(shadow_result, src, 12.0, 8.0, 8.0, BLRgba32(0xAA000000));
+  save_image(shadow_result, "test_30c_showcase_shadow.png");
+
+  BLImage glow_result;
+  BLImage::glow(glow_result, src, 15.0, BLRgba32(0xFFE94560));
+  save_image(glow_result, "test_30d_showcase_glow.png");
+
+  BLImage bright_result;
+  BLImage::brightness_contrast(bright_result, src, 0.15, 0.3);
+  save_image(bright_result, "test_30e_showcase_bright_contrast.png");
+
+  BLImage gray_result;
+  BLImage::saturation(gray_result, src, 0.0);
+  save_image(gray_result, "test_30f_showcase_grayscale.png");
+
+  BLImage vivid_result;
+  BLImage::saturation(vivid_result, src, 1.8);
+  save_image(vivid_result, "test_30g_showcase_vivid.png");
+
+  // Chain: glow + inner glow + brightness
+  BLImageEffectOptions chain[3] = {};
+  chain[0].type = BL_IMAGE_EFFECT_TYPE_GLOW;
+  chain[0].radius = 20.0; chain[0].quality = 0.5;
+  chain[0].color = 0x80E94560;
+
+  chain[1].type = BL_IMAGE_EFFECT_TYPE_GLOW;
+  chain[1].radius = 8.0; chain[1].quality = 0.5;
+  chain[1].color = 0xFFFFD700;
+  chain[1].flags = BL_IMAGE_EFFECT_FLAG_INNER;
+
+  chain[2].type = BL_IMAGE_EFFECT_TYPE_BRIGHTNESS_CONTRAST;
+  chain[2].radius = 0.1; // brightness
+  chain[2].quality = 0.2; // contrast
+
+  BLImage chain_result;
+  BLImage::apply_effects(chain_result, src, chain, 3);
+  save_image(chain_result, "test_30h_showcase_chained.png");
+
+  printf("  Saved 8 showcase images\n");
+  g_passes++;
+
+  // Verify they're all different from source
+  uint32_t src_p = get_pixel(src, 150, 100);
+  uint32_t blur_p = get_pixel(blur_result, 150, 100);
+  uint32_t gray_p = get_pixel(gray_result, 150, 100);
+
+  if (src_p != blur_p) {
+    printf("  PASS: Blur differs from source\n"); g_passes++;
+  } else {
+    printf("  FAIL: Blur identical to source\n"); g_failures++;
+  }
+
+  if (src_p != gray_p) {
+    printf("  PASS: Grayscale differs from source\n"); g_passes++;
+  } else {
+    printf("  FAIL: Grayscale identical to source\n"); g_failures++;
+  }
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -1463,6 +1760,10 @@ int main(int argc, char* argv[]) {
   test_chained_effects();
   test_brightness_contrast();
   test_saturation();
+  test_drop_shadow_variants();
+  test_brightness_contrast_edges();
+  test_saturation_edges();
+  test_effect_showcase();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
