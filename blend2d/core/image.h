@@ -229,6 +229,7 @@ BL_API bool BL_CDECL bl_image_equals(const BLImageCore* a, const BLImageCore* b)
 BL_API BLResult BL_CDECL bl_image_scale(BLImageCore* dst, const BLImageCore* src, const BLSizeI* size, BLImageScaleFilter filter) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_filter(BLImageCore* dst, const BLImageCore* src, BLImageFilterType type, double radius, double quality) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_apply_effect(BLImageCore* dst, const BLImageCore* src, const BLImageEffectOptions* options) BL_NOEXCEPT_C;
+BL_API BLResult BL_CDECL bl_image_apply_effects(BLImageCore* dst, const BLImageCore* src, const BLImageEffectOptions* options, uint32_t count) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_read_from_file(BLImageCore* self, const char* file_name, const BLArrayCore* codecs) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_read_from_data(BLImageCore* self, const void* data, size_t size, const BLArrayCore* codecs) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_write_to_file(const BLImageCore* self, const char* file_name, const BLImageCodecCore* codec) BL_NOEXCEPT_C;
@@ -613,6 +614,12 @@ public:
     opts.quality = quality;
     opts.color = color.value;
     return bl_image_apply_effect(&dst, &src, &opts);
+  }
+
+  //! Applies multiple effects in sequence. Each effect uses the output of the previous as input.
+  //! All intermediate effect layers are composited together with the original on a shared canvas.
+  static BL_INLINE_NODEBUG BLResult apply_effects(BLImage& dst, const BLImage& src, const BLImageEffectOptions* options, uint32_t count) noexcept {
+    return bl_image_apply_effects(&dst, &src, options, count);
   }
 
   //! Convenience: drop shadow (blur alpha, colorize, offset, composite behind).

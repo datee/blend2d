@@ -1189,6 +1189,129 @@ static void test_glow_modes() {
   }
 }
 
+// ----- Test 23: Inner Drop Shadow -----
+static void test_inner_drop_shadow() {
+  printf("\nTest 23: Inner Drop Shadow\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+    ctx.fill_round_rect(BLRoundRect(40, 40, 176, 176, 20), BLRgba32(0xFFDDDDDD));
+    ctx.end();
+  }
+
+  BLImageEffectOptions opts{};
+  opts.type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+  opts.radius = 10.0;
+  opts.quality = 0.5;
+  opts.offset_x = 4.0;
+  opts.offset_y = 4.0;
+  opts.color = 0xCC000000;
+  opts.flags = BL_IMAGE_EFFECT_FLAG_INNER;
+
+  BLImage result;
+  BLImage::apply_effect(result, src, opts);
+  save_image(result, "test_23_inner_drop_shadow.png");
+
+  // Center of rect should still have the original color
+  uint32_t c = get_pixel(result, 128, 128);
+  if (pixel_r(c) > 180) {
+    printf("  PASS: Inner shadow: center bright (R=%u)\n", unsigned(pixel_r(c)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Inner shadow: center dark (R=%u)\n", unsigned(pixel_r(c)));
+    g_failures++;
+  }
+
+  // Top-left inside edge should be darker (shadow offset pushes shadow inward from top-left)
+  uint32_t edge = get_pixel(result, 50, 50);
+  if (pixel_r(edge) < 200) {
+    printf("  PASS: Inner shadow: edge darker than center (%u < %u)\n",
+           unsigned(pixel_r(edge)), unsigned(pixel_r(c)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Inner shadow: edge not darker\n");
+    g_failures++;
+  }
+}
+
+// ----- Test 24: Chained Effects -----
+static void test_chained_effects() {
+  printf("\nTest 24: Chained Effects\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+    BLPath circle;
+    circle.add_circle(BLCircle(128, 128, 50));
+    ctx.fill_path(circle, BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+
+  // Chain: outer glow (blue, large) + inner glow (red, small) + drop shadow
+  BLImageEffectOptions effects[3] = {};
+
+  // Effect 0: outer glow (blue)
+  effects[0].type = BL_IMAGE_EFFECT_TYPE_GLOW;
+  effects[0].radius = 25.0;
+  effects[0].quality = 0.5;
+  effects[0].color = 0xFF0066FF;
+  effects[0].flags = BL_IMAGE_EFFECT_FLAG_NONE;
+
+  // Effect 1: inner glow (red)
+  effects[1].type = BL_IMAGE_EFFECT_TYPE_GLOW;
+  effects[1].radius = 10.0;
+  effects[1].quality = 0.5;
+  effects[1].color = 0xFFFF0000;
+  effects[1].flags = BL_IMAGE_EFFECT_FLAG_INNER;
+
+  // Effect 2: drop shadow
+  effects[2].type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+  effects[2].radius = 8.0;
+  effects[2].quality = 0.5;
+  effects[2].offset_x = 6.0;
+  effects[2].offset_y = 6.0;
+  effects[2].color = 0xAA000000;
+  effects[2].flags = BL_IMAGE_EFFECT_FLAG_NONE;
+
+  BLImage result;
+  BLResult r = BLImage::apply_effects(result, src, effects, 3);
+  if (r != BL_SUCCESS) {
+    printf("  FAIL: apply_effects returned error %u\n", unsigned(r));
+    g_failures++;
+    return;
+  }
+
+  save_image(result, "test_24_chained_effects.png");
+
+  // Center should be white (original preserved)
+  uint32_t c = get_pixel(result, 128, 128);
+  if (pixel_r(c) > 200 && pixel_g(c) > 200 && pixel_b(c) > 200) {
+    printf("  PASS: Chain: center white (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(c)), unsigned(pixel_g(c)), unsigned(pixel_b(c)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Chain: center not white (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(c)), unsigned(pixel_g(c)), unsigned(pixel_b(c)));
+    g_failures++;
+  }
+
+  // Outside circle should have blue glow visible (check closer, at r=55)
+  uint32_t outer = get_pixel(result, 128 + 55, 128);
+  if (pixel_b(outer) > 5) {
+    printf("  PASS: Chain: blue glow visible (B=%u)\n", unsigned(pixel_b(outer)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Chain: no blue glow (B=%u)\n", unsigned(pixel_b(outer)));
+    g_failures++;
+  }
+
+  printf("  PASS: Chained 3 effects successfully\n");
+  g_passes++;
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -1219,6 +1342,8 @@ int main(int argc, char* argv[]) {
   test_glow();
   test_blur_quality_tiers();
   test_glow_modes();
+  test_inner_drop_shadow();
+  test_chained_effects();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);

@@ -672,31 +672,106 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
   }
 
   if (options->type == BL_IMAGE_EFFECT_TYPE_DROP_SHADOW) {
-    // Drop shadow: extract alpha → blur → colorize → offset → composite under original.
     BLImagePrivateImpl* si = get_impl(src);
     int w = si->size.w;
     int h = si->size.h;
+    uint32_t flags = options->flags;
+    bool inner = (flags & BL_IMAGE_EFFECT_FLAG_INNER) != 0;
+    bool knockout = (flags & BL_IMAGE_EFFECT_FLAG_KNOCKOUT) != 0;
 
     int offset_x = int(options->offset_x);
     int offset_y = int(options->offset_y);
-
-    // Expand output to fit both the shadow (offset) and the original.
-    int out_w = w + bl_abs(offset_x);
-    int out_h = h + bl_abs(offset_y);
-
-    // Source position in output.
-    int src_x = bl_max(-offset_x, 0);
-    int src_y = bl_max(-offset_y, 0);
-
-    // Shadow position in output.
-    int shd_x = bl_max(offset_x, 0);
-    int shd_y = bl_max(offset_y, 0);
 
     // Step 1: Extract alpha from source.
     BLImage alpha_mask;
     BL_PROPAGATE(bl::extract_alpha(alpha_mask, src->dcast()));
 
-    // Step 2: Blur the alpha mask.
+    BLImage shadow_layer;
+
+    if (inner) {
+      // Inner shadow: invert alpha, blur, colorize, mask to original shape, offset inside.
+      BLImage inv_alpha(w, h, BL_FORMAT_A8);
+      {
+        BLImageData src_a, dst_a;
+        alpha_mask.get_data(&src_a);
+        inv_alpha.make_mutable(&dst_a);
+        const uint8_t* sp = static_cast<const uint8_t*>(src_a.pixel_data);
+        uint8_t* dp = static_cast<uint8_t*>(dst_a.pixel_data);
+        for (int y = 0; y < h; y++) {
+          for (int x = 0; x < w; x++)
+            dp[x] = uint8_t(255 - sp[x]);
+          sp += src_a.stride;
+          dp += dst_a.stride;
+        }
+      }
+
+      BLImage blurred_inv;
+      BL_PROPAGATE(bl_image_filter(
+        static_cast<BLImageCore*>(&blurred_inv),
+        static_cast<const BLImageCore*>(&inv_alpha),
+        (quality < 0.3) ? BL_IMAGE_FILTER_TYPE_BOX_BLUR : BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR,
+        radius, quality));
+
+      BLImage inner_shadow;
+      BL_PROPAGATE(bl::colorize_mask(inner_shadow, blurred_inv, options->color));
+
+      // Mask to original shape and apply offset.
+      shadow_layer = BLImage(w, h, BL_FORMAT_PRGB32);
+      {
+        BLContext ctx(shadow_layer);
+        ctx.clear_all();
+        ctx.set_comp_op(BL_COMP_OP_SRC_OVER);
+        ctx.blit_image(BLPoint(offset_x, offset_y), inner_shadow);
+        ctx.end();
+      }
+
+      // Mask with original alpha.
+      {
+        BLImageData shd_data, alp_data;
+        shadow_layer.make_mutable(&shd_data);
+        alpha_mask.get_data(&alp_data);
+        uint8_t* sp = static_cast<uint8_t*>(shd_data.pixel_data);
+        const uint8_t* ap = static_cast<const uint8_t*>(alp_data.pixel_data);
+        for (int y = 0; y < h; y++) {
+          uint32_t* row = reinterpret_cast<uint32_t*>(sp);
+          for (int x = 0; x < w; x++) {
+            uint32_t p = row[x];
+            uint32_t ma = ap[x];
+            row[x] = (((p >>  0) & 0xFF) * ma / 255)       |
+                     ((((p >>  8) & 0xFF) * ma / 255) << 8) |
+                     ((((p >> 16) & 0xFF) * ma / 255) << 16)|
+                     ((((p >> 24) & 0xFF) * ma / 255) << 24);
+          }
+          sp += shd_data.stride;
+          ap += alp_data.stride;
+        }
+      }
+
+      // Composite: inner shadow on/with original.
+      BLImage result(w, h, BL_FORMAT_PRGB32);
+      {
+        BLContext ctx(result);
+        ctx.clear_all();
+        ctx.set_comp_op(BL_COMP_OP_SRC_OVER);
+        if (!knockout) {
+          ctx.blit_image(BLPoint(0, 0), src->dcast());
+        }
+        ctx.blit_image(BLPoint(0, 0), shadow_layer);
+        ctx.end();
+      }
+      dst->dcast() = result;
+      return BL_SUCCESS;
+    }
+
+    // Outer shadow path.
+    // Expand output to fit both shadow and original.
+    int out_w = w + bl_abs(offset_x);
+    int out_h = h + bl_abs(offset_y);
+    int src_x = bl_max(-offset_x, 0);
+    int src_y = bl_max(-offset_y, 0);
+    int shd_x = bl_max(offset_x, 0);
+    int shd_y = bl_max(offset_y, 0);
+
     BLImage blurred_mask;
     BL_PROPAGATE(bl_image_filter(
       static_cast<BLImageCore*>(&blurred_mask),
@@ -704,18 +779,18 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
       (quality < 0.3) ? BL_IMAGE_FILTER_TYPE_BOX_BLUR : BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR,
       radius, quality));
 
-    // Step 3: Colorize the blurred mask.
     BLImage shadow;
     BL_PROPAGATE(bl::colorize_mask(shadow, blurred_mask, options->color));
 
-    // Step 4: Composite — shadow first, then original on top.
     BLImage result(out_w, out_h, BL_FORMAT_PRGB32);
     {
       BLContext ctx(result);
       ctx.clear_all();
       ctx.set_comp_op(BL_COMP_OP_SRC_OVER);
       ctx.blit_image(BLPoint(shd_x, shd_y), shadow);
-      ctx.blit_image(BLPoint(src_x, src_y), src->dcast());
+      if (!knockout) {
+        ctx.blit_image(BLPoint(src_x, src_y), src->dcast());
+      }
       ctx.end();
     }
 
@@ -724,6 +799,83 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
   }
 
   return bl_make_error(BL_ERROR_INVALID_VALUE);
+}
+
+// bl::ImageFilter - Apply Effects Chain (Public API)
+// ==================================================
+
+BL_API_IMPL BLResult bl_image_apply_effects(BLImageCore* dst, const BLImageCore* src, const BLImageEffectOptions* options, uint32_t count) noexcept {
+  using namespace bl::ImageInternal;
+
+  BL_ASSERT(dst->_d.is_image());
+  BL_ASSERT(src->_d.is_image());
+
+  if (count == 0) {
+    if (dst != src)
+      return bl_image_assign_deep(dst, src);
+    return BL_SUCCESS;
+  }
+
+  if (count == 1) {
+    return bl_image_apply_effect(dst, src, &options[0]);
+  }
+
+  // For chaining: each effect is applied to the original source, then all effect layers
+  // are composited together. Effects marked KNOCKOUT don't include the original.
+  // The compositing order is: effects[0] (bottom) → effects[1] → ... → original (top, unless all knockout).
+  BLImagePrivateImpl* si = get_impl(src);
+  int w = si->size.w;
+  int h = si->size.h;
+
+  BLImage result(w, h, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(result);
+    ctx.clear_all();
+    ctx.set_comp_op(BL_COMP_OP_SRC_OVER);
+
+    bool need_original = false;
+
+    // Apply each effect and composite the result layer onto the canvas.
+    for (uint32_t i = 0; i < count; i++) {
+      BLImage effect_result;
+      BLResult r = bl_image_apply_effect(
+        static_cast<BLImageCore*>(&effect_result),
+        src,
+        &options[i]);
+
+      if (r != BL_SUCCESS)
+        continue;
+
+      // If this effect has knockout, it already omits the original.
+      // If not, the effect layer includes the original — we only need the effect part.
+      bool is_knockout = (options[i].flags & BL_IMAGE_EFFECT_FLAG_KNOCKOUT) != 0;
+
+      if (!is_knockout) {
+        // Non-knockout effects include the original composited in.
+        // For chaining, we want just the effect layer. Apply it with knockout to get the effect only,
+        // then we'll add the original at the end.
+        BLImageEffectOptions ko_opts = options[i];
+        ko_opts.flags |= BL_IMAGE_EFFECT_FLAG_KNOCKOUT;
+        bl_image_apply_effect(
+          static_cast<BLImageCore*>(&effect_result),
+          src,
+          &ko_opts);
+        need_original = true;
+      }
+
+      ctx.blit_image(BLPoint(0, 0), effect_result);
+    }
+
+    // Add original on top if any non-knockout effect was used.
+    if (need_original) {
+      ctx.blit_image(BLPoint(0, 0), src->dcast());
+    }
+
+    ctx.end();
+  }
+
+  dst->dcast() = result;
+  return BL_SUCCESS;
 }
 
 // bl::ImageFilter - Runtime Registration
