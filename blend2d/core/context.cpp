@@ -802,6 +802,14 @@ BL_API_IMPL BLResult bl_context_clip_to_rect_d(BLContextCore* self, const BLRect
   return impl->virt->clip_to_rect_d(impl, rect);
 }
 
+// Implemented in rastercontext.cpp.
+extern "C" BLResult bl_raster_context_apply_filter(BLContextCore* self, const BLRectI* region, const BLImageEffectOptions* options) noexcept;
+
+BL_API_IMPL BLResult bl_context_apply_filter(BLContextCore* self, const BLRectI* region, const BLImageEffectOptions* options) noexcept {
+  BL_ASSERT(self->_d.is_context());
+  return bl_raster_context_apply_filter(self, region, options);
+}
+
 BL_API_IMPL BLResult bl_context_clip_to_path(BLContextCore* self, const BLPathCore* path) noexcept {
   BL_ASSERT(self->_d.is_context());
   BLContextImpl* impl = self->_impl();

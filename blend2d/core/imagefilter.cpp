@@ -279,25 +279,101 @@ static BLResult true_gaussian_blur(BLImage& dst, const BLImage& src, double radi
 
   uint32_t format = src_data.format;
 
-  // Horizontal pass: src → tmp
+  // Threaded Gaussian convolution using the thread pool.
+  struct GaussWorkData {
+    uint8_t* dst; intptr_t dst_stride;
+    const uint8_t* src; intptr_t src_stride;
+    int w, h, range_start, range_end;
+    const int32_t* weights; int kernel_radius; int weight_shift;
+    bool is_horz;
+    std::atomic<uint32_t>* done_count;
+  };
+
+  auto gauss_thread_func = [](BLThread* thread, void* data) noexcept {
+    bl_unused(thread);
+    GaussWorkData* work = static_cast<GaussWorkData*>(data);
+    if (work->is_horz) {
+      gaussian_conv_horz_prgb32(work->dst, work->dst_stride, work->src, work->src_stride,
+        work->w, work->h, work->range_start, work->range_end, work->weights, work->kernel_radius, work->weight_shift);
+    } else {
+      gaussian_conv_vert_prgb32(work->dst, work->dst_stride, work->src, work->src_stride,
+        work->w, work->h, work->range_start, work->range_end, work->weights, work->kernel_radius, work->weight_shift);
+    }
+    work->done_count->fetch_add(1, std::memory_order_release);
+  };
+
+  BLThreadPool* pool = bl_thread_pool_global();
+  uint32_t max_threads = bl_min(uint32_t(bl_max(h / 32, 1)), 8u);
+  BLThread* threads[8];
+  BLResult reason = BL_SUCCESS;
+  uint32_t acquired = pool->acquire_threads(threads, max_threads, 0, &reason);
+
+  // Horizontal pass: src → tmp (split by rows)
   BLImage tmp(w, h, BLFormat(format));
   BLImageData tmp_data;
   BL_PROPAGATE(tmp.make_mutable(&tmp_data));
 
-  gaussian_conv_horz_prgb32(
-    static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
-    static_cast<const uint8_t*>(src_data.pixel_data), src_data.stride,
-    w, h, 0, h, weights, kernel_radius, kWeightShift);
+  if (acquired > 0) {
+    uint32_t total_workers = acquired + 1;
+    int range_per = h / int(total_workers);
+    int remainder = h % int(total_workers);
 
-  // Vertical pass: tmp → dst
-  BL_PROPAGATE(bl_image_create(static_cast<BLImageCore*>(&dst), w, h, BLFormat(format)));
-  BLImageData dst_data;
-  BL_PROPAGATE(dst.make_mutable(&dst_data));
+    std::atomic<uint32_t> done_h{0};
+    GaussWorkData h_work[8];
+    int pos = 0;
+    for (uint32_t i = 0; i < acquired; i++) {
+      int chunk = range_per + (int(i) < remainder ? 1 : 0);
+      h_work[i] = {static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
+                    static_cast<const uint8_t*>(src_data.pixel_data), src_data.stride,
+                    w, h, pos, pos + chunk, weights, kernel_radius, kWeightShift, true, &done_h};
+      pos += chunk;
+      threads[i]->run(gauss_thread_func, &h_work[i]);
+    }
+    gaussian_conv_horz_prgb32(static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
+      static_cast<const uint8_t*>(src_data.pixel_data), src_data.stride,
+      w, h, pos, h, weights, kernel_radius, kWeightShift);
+    while (done_h.load(std::memory_order_acquire) < acquired) {}
 
-  gaussian_conv_vert_prgb32(
-    static_cast<uint8_t*>(dst_data.pixel_data), dst_data.stride,
-    static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
-    w, h, 0, w, weights, kernel_radius, kWeightShift);
+    // Vertical pass: tmp → dst (split by columns)
+    BL_PROPAGATE(bl_image_create(static_cast<BLImageCore*>(&dst), w, h, BLFormat(format)));
+    BLImageData dst_data;
+    BL_PROPAGATE(dst.make_mutable(&dst_data));
+
+    std::atomic<uint32_t> done_v{0};
+    GaussWorkData v_work[8];
+    int v_per = w / int(total_workers);
+    int v_rem = w % int(total_workers);
+    pos = 0;
+    for (uint32_t i = 0; i < acquired; i++) {
+      int chunk = v_per + (int(i) < v_rem ? 1 : 0);
+      v_work[i] = {static_cast<uint8_t*>(dst_data.pixel_data), dst_data.stride,
+                    static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
+                    w, h, pos, pos + chunk, weights, kernel_radius, kWeightShift, false, &done_v};
+      pos += chunk;
+      threads[i]->run(gauss_thread_func, &v_work[i]);
+    }
+    gaussian_conv_vert_prgb32(static_cast<uint8_t*>(dst_data.pixel_data), dst_data.stride,
+      static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
+      w, h, pos, w, weights, kernel_radius, kWeightShift);
+    while (done_v.load(std::memory_order_acquire) < acquired) {}
+
+    pool->release_threads(threads, acquired);
+  } else {
+    // Single-threaded fallback.
+    gaussian_conv_horz_prgb32(
+      static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
+      static_cast<const uint8_t*>(src_data.pixel_data), src_data.stride,
+      w, h, 0, h, weights, kernel_radius, kWeightShift);
+
+    BL_PROPAGATE(bl_image_create(static_cast<BLImageCore*>(&dst), w, h, BLFormat(format)));
+    BLImageData dst_data;
+    BL_PROPAGATE(dst.make_mutable(&dst_data));
+
+    gaussian_conv_vert_prgb32(
+      static_cast<uint8_t*>(dst_data.pixel_data), dst_data.stride,
+      static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
+      w, h, 0, w, weights, kernel_radius, kWeightShift);
+  }
 
   free(weights);
   return BL_SUCCESS;

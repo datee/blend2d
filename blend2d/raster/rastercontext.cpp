@@ -2875,6 +2875,86 @@ BL_INLINE BLResult fill_clipped_box_f<kAsync>(BLRasterContextImpl* ctx_impl, Dis
   return enqueue_command(ctx_impl, command, qy0, ds.fetch_data, [&](RenderCommand*) noexcept {});
 }
 
+// bl::RasterEngine - ContextImpl - Apply Filter
+// ==============================================
+
+extern "C" BLResult bl_raster_context_apply_filter(BLContextCore* self, const BLRectI* region, const BLImageEffectOptions* options) noexcept {
+  BLRasterContextImpl* ctx_impl = static_cast<BLRasterContextImpl*>(self->_impl());
+
+  // Flush pending commands.
+  ctx_impl->virt->flush(ctx_impl, BL_CONTEXT_FLUSH_SYNC);
+
+  // Determine the region to filter.
+  BLRectI clip_region;
+  if (region) {
+    clip_region = *region;
+  } else {
+    clip_region.x = ctx_impl->final_clip_box_i().x0;
+    clip_region.y = ctx_impl->final_clip_box_i().y0;
+    clip_region.w = ctx_impl->final_clip_box_i().x1 - ctx_impl->final_clip_box_i().x0;
+    clip_region.h = ctx_impl->final_clip_box_i().y1 - ctx_impl->final_clip_box_i().y0;
+  }
+
+  if (clip_region.w <= 0 || clip_region.h <= 0)
+    return BL_SUCCESS;
+
+  // Clamp to destination bounds.
+  int dst_w = ctx_impl->dst_data.size.w;
+  int dst_h = ctx_impl->dst_data.size.h;
+  int x0 = bl_max(clip_region.x, 0);
+  int y0 = bl_max(clip_region.y, 0);
+  int x1 = bl_min(clip_region.x + clip_region.w, dst_w);
+  int y1 = bl_min(clip_region.y + clip_region.h, dst_h);
+  int rw = x1 - x0;
+  int rh = y1 - y0;
+  if (rw <= 0 || rh <= 0) return BL_SUCCESS;
+
+  uint32_t format = ctx_impl->dst_data.format;
+  int bpp = (format == BL_FORMAT_A8) ? 1 : 4;
+
+  // Extract region into a temporary image.
+  BLImage region_img(rw, rh, BLFormat(format));
+  BLImageData region_data;
+  region_img.make_mutable(&region_data);
+
+  const uint8_t* src_base = static_cast<const uint8_t*>(ctx_impl->dst_data.pixel_data);
+  uint8_t* dst_base = static_cast<uint8_t*>(region_data.pixel_data);
+  for (int y = 0; y < rh; y++) {
+    memcpy(dst_base + y * region_data.stride,
+           src_base + (y0 + y) * ctx_impl->dst_data.stride + x0 * bpp,
+           size_t(rw) * bpp);
+  }
+
+  // Apply the effect to the extracted region.
+  BLImage filtered;
+  BL_PROPAGATE(bl_image_apply_effect(
+    static_cast<BLImageCore*>(&filtered),
+    static_cast<const BLImageCore*>(&region_img),
+    options));
+
+  // Write the filtered pixels back to the destination.
+  BLImageData filtered_data;
+  filtered.get_data(&filtered_data);
+
+  // Make the destination image mutable (it should already be since we're rendering to it).
+  BLImageData mutable_dst;
+  ctx_impl->dst_image.dcast().make_mutable(&mutable_dst);
+
+  uint8_t* write_base = static_cast<uint8_t*>(mutable_dst.pixel_data);
+  const uint8_t* read_base = static_cast<const uint8_t*>(filtered_data.pixel_data);
+
+  int copy_w = bl_min(rw, filtered_data.size.w);
+  int copy_h = bl_min(rh, filtered_data.size.h);
+
+  for (int y = 0; y < copy_h; y++) {
+    memcpy(write_base + (y0 + y) * mutable_dst.stride + x0 * bpp,
+           read_base + y * filtered_data.stride,
+           size_t(copy_w) * bpp);
+  }
+
+  return BL_SUCCESS;
+}
+
 // bl::RasterEngine - ContextImpl - Internals - Fill Clipped Edges
 // ===============================================================
 

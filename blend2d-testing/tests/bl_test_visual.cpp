@@ -2489,6 +2489,45 @@ static void test_color_matrix() {
   }
 }
 
+// ----- Test 46: Context apply_filter -----
+static void test_context_apply_filter() {
+  printf("\nTest 46: Context apply_filter\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+
+  // Draw sharp shapes
+  ctx.fill_all(BLRgba32(0xFFFFFFFF));
+  ctx.fill_rect(BLRect(50, 50, 60, 60), BLRgba32(0xFFFF0000));
+  ctx.fill_rect(BLRect(150, 50, 60, 60), BLRgba32(0xFF0000FF));
+
+  // Apply blur to a region (center strip)
+  BLImageEffectOptions blur_opts{};
+  blur_opts.type = BL_IMAGE_EFFECT_TYPE_BLUR;
+  blur_opts.radius = 10.0;
+  blur_opts.quality = 0.5;
+  ctx.apply_filter(BLRectI(40, 40, 180, 80), blur_opts);
+
+  ctx.end();
+
+  save_image(img, "test_46_context_apply_filter.png");
+
+  // The blurred region should have softer edges
+  // Red rect center should still be reddish but softer
+  uint32_t center_red = get_pixel(img, 80, 80);
+  if (pixel_r(center_red) > 100) {
+    printf("  PASS: Context filter: red rect still visible (R=%u)\n", unsigned(pixel_r(center_red)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Context filter: red rect gone (R=%u)\n", unsigned(pixel_r(center_red)));
+    g_failures++;
+  }
+
+  // Below the filtered region should be sharp (untouched)
+  check_pixel_near(img, 80, 200, 0xFFFFFFFF, 0, "Context filter: below region sharp white");
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -2542,6 +2581,7 @@ int main(int argc, char* argv[]) {
   test_path_clip_gradient();
   test_path_clip_blit();
   test_color_matrix();
+  test_context_apply_filter();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);

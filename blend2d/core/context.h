@@ -728,6 +728,7 @@ BL_API BLResult BL_CDECL bl_context_set_stroke_options(BLContextCore* self, cons
 BL_API BLResult BL_CDECL bl_context_clip_to_rect_i(BLContextCore* self, const BLRectI* rect) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_context_clip_to_rect_d(BLContextCore* self, const BLRect* rect) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_context_clip_to_path(BLContextCore* self, const BLPathCore* path) BL_NOEXCEPT_C;
+BL_API BLResult BL_CDECL bl_context_apply_filter(BLContextCore* self, const BLRectI* region, const BLImageEffectOptions* options) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_context_restore_clipping(BLContextCore* self) BL_NOEXCEPT_C;
 
 BL_API BLResult BL_CDECL bl_context_clear_all(BLContextCore* self) BL_NOEXCEPT_C;
@@ -2030,6 +2031,17 @@ public:
   //! Clips to a path. The clip region becomes the intersection of the current clip and the filled path.
   BL_INLINE_NODEBUG BLResult clip_to_path(const BLPath& path) noexcept {
     BL_CONTEXT_CALL_RETURN(clip_to_path, impl, &path);
+  }
+
+  //! Applies an image effect to the current clip region of the rendering target.
+  //! Flushes pending commands, extracts the region, applies the effect, and writes back.
+  BL_INLINE_NODEBUG BLResult apply_filter(const BLImageEffectOptions& options) noexcept {
+    return bl_context_apply_filter(this, nullptr, &options);
+  }
+
+  //! Applies an image effect to a specific rectangle of the rendering target.
+  BL_INLINE_NODEBUG BLResult apply_filter(const BLRectI& region, const BLImageEffectOptions& options) noexcept {
+    return bl_context_apply_filter(this, &region, &options);
   }
 
   //! \}
