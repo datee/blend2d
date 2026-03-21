@@ -2890,6 +2890,119 @@ BL_NOINLINE BLResult fill_clipped_edges<kSync>(BLRasterContextImpl* ctx_impl, Di
   if (edge_storage.is_empty() || edge_storage.bounding_box().y0 >= edge_storage.bounding_box().y1)
     return BL_SUCCESS;
 
+  // When clip_mode is MASK, render edges to a temporary image then composite through the clip mask.
+  // This ensures fill_path and stroke operations respect the path-based clip.
+  if (ctx_impl->clip_mode() == BL_CLIP_MODE_MASK) {
+    // Save the original destination.
+    BLImageData orig_dst = work_data.ctx_data.dst;
+
+    // Get the edge bounding box to determine the affected region.
+    const BLBoxI& edge_bbox = edge_storage.bounding_box();
+    int fp_shift = ctx_impl->render_target_info.fpShiftI;
+    int fp_mask = ctx_impl->render_target_info.fpMaskI;
+    int ey0 = edge_bbox.y0 >> fp_shift;
+    int ey1 = (edge_bbox.y1 + fp_mask) >> fp_shift;
+    int eh = ey1 - ey0;
+
+    // Create a temporary image matching the destination dimensions.
+    // We render to the full-width temp so coordinates remain consistent.
+    BLImage temp_img(orig_dst.size.w, orig_dst.size.h, BLFormat(orig_dst.format));
+    BLImageData temp_data;
+    temp_img.make_mutable(&temp_data);
+
+    // Clear the affected region of the temp image.
+    uint8_t* temp_line = static_cast<uint8_t*>(temp_data.pixel_data) + ey0 * temp_data.stride;
+    size_t row_bytes = size_t(orig_dst.size.w) * (orig_dst.format == BL_FORMAT_A8 ? 1 : 4);
+    for (int y = 0; y < eh; y++) {
+      memset(temp_line, 0, row_bytes);
+      temp_line += temp_data.stride;
+    }
+
+    // Redirect rendering to the temp image.
+    work_data.ctx_data.dst = temp_data;
+
+    // Render the edges normally to the temp.
+    Pipeline::DispatchData dispatch_data;
+    di.add_fill_type(Pipeline::FillType::kAnalytic);
+    BLResult result = ensure_fetch_and_dispatch_data(ctx_impl, di.signature, ds.fetch_data, &dispatch_data);
+    if (BL_UNLIKELY(result != BL_SUCCESS)) {
+      work_data.revert_edge_builder();
+      work_data.ctx_data.dst = orig_dst;
+      return result;
+    }
+
+    result = CommandProcSync::fill_analytic(work_data, dispatch_data, di.alpha, &edge_storage, fill_rule, ds.fetch_data->get_pipeline_data());
+
+    // Restore original destination.
+    work_data.ctx_data.dst = orig_dst;
+
+    if (result != BL_SUCCESS)
+      return result;
+
+    // Composite the temp image onto the real destination through the clip mask.
+    // Read each pixel from temp, multiply alpha by clip mask alpha, write to destination.
+    BLImageData mask_data;
+    ctx_impl->clip_mask.dcast().get_data(&mask_data);
+    int mask_ox = ctx_impl->clip_mask_offset.x;
+    int mask_oy = ctx_impl->clip_mask_offset.y;
+
+    const uint8_t* src_line = static_cast<const uint8_t*>(temp_data.pixel_data) + ey0 * temp_data.stride;
+    uint8_t* dst_line = static_cast<uint8_t*>(orig_dst.pixel_data) + ey0 * orig_dst.stride;
+
+    for (int y = ey0; y < ey1; y++) {
+      const uint32_t* sp = reinterpret_cast<const uint32_t*>(src_line);
+      uint32_t* dp = reinterpret_cast<uint32_t*>(dst_line);
+
+      int my = y - mask_oy;
+      const uint8_t* mask_row = nullptr;
+      if (my >= 0 && my < mask_data.size.h)
+        mask_row = static_cast<const uint8_t*>(mask_data.pixel_data) + my * mask_data.stride;
+
+      for (int x = 0; x < orig_dst.size.w; x++) {
+        uint32_t src_pixel = sp[x];
+        if (src_pixel == 0) continue;  // Skip fully transparent pixels.
+
+        // Get clip mask alpha.
+        uint32_t mask_alpha = 0;
+        if (mask_row) {
+          int mx = x - mask_ox;
+          if (mx >= 0 && mx < mask_data.size.w)
+            mask_alpha = mask_row[mx];
+        }
+
+        if (mask_alpha == 0) continue;
+
+        // Scale source pixel by mask alpha and composite (SrcOver) onto destination.
+        uint32_t sb = (src_pixel >>  0) & 0xFF;
+        uint32_t sg = (src_pixel >>  8) & 0xFF;
+        uint32_t sr = (src_pixel >> 16) & 0xFF;
+        uint32_t sa = (src_pixel >> 24) & 0xFF;
+
+        if (mask_alpha < 255) {
+          sb = sb * mask_alpha / 255;
+          sg = sg * mask_alpha / 255;
+          sr = sr * mask_alpha / 255;
+          sa = sa * mask_alpha / 255;
+        }
+
+        // SrcOver: dst = src + dst * (1 - srcA)
+        uint32_t dst_pixel = dp[x];
+        uint32_t inv_sa = 255 - sa;
+        uint32_t db = ((dst_pixel >>  0) & 0xFF) * inv_sa / 255 + sb;
+        uint32_t dg = ((dst_pixel >>  8) & 0xFF) * inv_sa / 255 + sg;
+        uint32_t dr = ((dst_pixel >> 16) & 0xFF) * inv_sa / 255 + sr;
+        uint32_t da = ((dst_pixel >> 24) & 0xFF) * inv_sa / 255 + sa;
+
+        dp[x] = bl_min(db, 255u) | (bl_min(dg, 255u) << 8) | (bl_min(dr, 255u) << 16) | (bl_min(da, 255u) << 24);
+      }
+
+      src_line += temp_data.stride;
+      dst_line += orig_dst.stride;
+    }
+
+    return BL_SUCCESS;
+  }
+
   Pipeline::DispatchData dispatch_data;
   di.add_fill_type(Pipeline::FillType::kAnalytic);
   BLResult result = ensure_fetch_and_dispatch_data(ctx_impl, di.signature, ds.fetch_data, &dispatch_data);
