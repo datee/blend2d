@@ -261,12 +261,12 @@ b456e08 Add comprehensive plan to resolve all 64 tracked issues across the codeb
 
 ---
 
-## Remaining Work (Phases 3–9)
+## Remaining Work (Phases 5–9)
 
 | Phase | Description | Items | Status |
 |-------|-------------|-------|--------|
-| 3 | A8 Pipeline Completion | 5 | Not started |
-| 4 | AArch64 Optimizations | 6 | Not started |
+| 3 | A8 Pipeline Completion | 5 | **Done** |
+| 4 | AArch64/SIMD Optimizations | 7 | **Done** |
 | 5 | Rendering Context Features | 12 | Not started |
 | 6 | OpenType Font Support | 12 | Not started |
 | 7 | Image Codec Enhancements | 11 | Not started |

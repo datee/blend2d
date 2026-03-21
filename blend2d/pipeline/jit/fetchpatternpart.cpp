@@ -210,7 +210,9 @@ FetchSimplePatternPart::FetchSimplePatternPart(PipeCompiler* pc, FetchType fetch
       break;
 
     case FetchType::kPatternAlignedPad:
-      // TODO: [JIT] OPTIMIZATION: We have removed fetch2x4, so `_max_pixels` cannot be raised to 8.
+      // TODO: [JIT] OPTIMIZATION: Re-implement fetch2x4 to raise _max_pixels back to 8 for aligned pad.
+      // This was removed due to boundary condition complexity — the 8-pixel fetch must correctly handle
+      // the case where the fetch window spans the pad boundary. Currently limited to 4 pixels.
       // _max_pixels = 8;
       _extend_x = ExtendMode::kPad;
       break;
@@ -1683,7 +1685,9 @@ FetchAffinePatternPart::FetchAffinePatternPart(PipeCompiler* pc, FetchType fetch
 
     case FetchType::kPatternAffineBIAny:
     case FetchType::kPatternAffineBIOpt:
-      // TODO: [JIT] OPTIMIZATION: Implement fetch4.
+      // TODO: [JIT] OPTIMIZATION: Implement fetch4 for affine bilinear. This would fetch 4 pixels per
+      // iteration, requiring 4-way parallel bilinear interpolation with independent (fx, fy) coordinates.
+      // High register pressure — needs 4 sets of weight registers plus 4 pixel quads.
       _max_pixels = 1;
       add_part_flags(PipePartFlags::kExpensive);
       break;

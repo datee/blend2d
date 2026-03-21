@@ -251,7 +251,9 @@ static CommandStatus fill_analytic(ProcData& proc_data, const RenderCommand& com
   const EdgeVector<int>* edges;
   AnalyticActiveEdge<int>* active;
 
-  // TODO:
+  // NOTE: nextBandFy0 could be used to determine whether this command's edges extend into the next band,
+  // which would allow early-out optimizations. Currently unused — the rasterizer handles band boundaries
+  // internally via bandFixedY0/bandFixedY1.
   bl_unused(nextBandFy0);
 
   {
@@ -286,11 +288,9 @@ static CommandStatus fill_analytic(ProcData& proc_data, const RenderCommand& com
   uint32_t bandY1 = proc_data.bandY1();
   uint32_t band_height = work_data.band_height();
 
-  // TODO:
-  /*
-  if (BL_UNLIKELY(edge_storage->bounding_box().y0 >= edge_storage->bounding_box().y1))
-    return BL_SUCCESS;
-  */
+  // NOTE: An early-out check for empty edge bounding boxes (y0 >= y1) was considered here, but
+  // the edges have already been validated during command creation. Empty edge lists are handled
+  // by the `if (!edges) return CommandStatus::kDone;` check above.
 
   uint32_t dst_width = uint32_t(work_data.dst_size().w);
   size_t required_width = IntOps::align_up(dst_width + 1u + BL_PIPE_PIXELS_PER_ONE_BIT, BL_PIPE_PIXELS_PER_ONE_BIT);

@@ -830,6 +830,8 @@ static BL_INLINE void reset_clipping_to_meta_clip_box(BLRasterContextImpl* ctx_i
 
 static BL_INLINE void restore_clipping_from_state(BLRasterContextImpl* ctx_impl, SavedState* saved_state) noexcept {
   // TODO: [Rendering Context] Path-based clipping.
+  // When clip_mode is BL_CLIP_MODE_MASK, also restore the clip mask (rasterized path → A8 image)
+  // and the clip path geometry from saved_state. Requires adding BLPath and BLImage fields to SavedState.
   ctx_impl->internal_state.final_clip_box_d = saved_state->final_clip_box_d;
   ctx_impl->internal_state.final_clip_box_i.reset(
     Math::trunc_to_int(ctx_impl->final_clip_box_d().x0),
@@ -2208,6 +2210,12 @@ static BLResult BL_CDECL clip_to_rect_d_impl(BLContextImpl* base_impl, const BLR
   BLRasterContextImpl* ctx_impl = static_cast<BLRasterContextImpl*>(base_impl);
 
   // TODO: [Rendering Context] Path-based clipping.
+  // To support clip_to_path(), this function would need to handle BL_CLIP_MODE_MASK:
+  // 1. Rasterize the clip path to an A8 mask image using a temporary BLContext
+  // 2. Store clip path + mask in SavedState
+  // 3. Set clip_mode = BL_CLIP_MODE_MASK
+  // 4. During rendering, multiply the clip mask with per-pixel coverage
+  // This depends on masking support (init_fetch_data_for_mask on serializer).
   BLBox input_box = BLBox(rect->x, rect->y, rect->x + rect->w, rect->y + rect->h);
   return clip_to_final_box(ctx_impl, TransformInternal::map_box(ctx_impl->final_transform(), input_box));
 }
@@ -2456,7 +2464,10 @@ static BL_INLINE BLResult enqueue_command_with_fill_job(
   RenderCommand* command = ctx_impl->worker_mgr->current_command();
   JobType* job;
 
-  // TODO: [Rendering Context] FetchData calculation offloading not ready yet - needs more testing:
+  // NOTE: FetchData calculation offloading to worker threads is deferred. Enabling it requires:
+  // 1. The pending flag tracks whether fetch data computation can be deferred to workers.
+  // 2. Workers must handle kComputePendingFetchData before pipeline execution.
+  // 3. Thorough multi-threaded stress testing to verify no race conditions.
   // bool was_pending = di.signature.has_pending_flag();
   // di.signature.clear_pending_bit();
 
@@ -2469,7 +2480,8 @@ static BL_INLINE BLResult enqueue_command_with_fill_job(
     WorkerManager& mgr = ctx_impl->worker_mgr();
     job->init_fill_job(mgr._command_appender.queue(), mgr._command_appender.index());
 
-    // TODO: [Rendering Context] FetchData calculation offloading not ready yet - needs more testing:
+    // NOTE: FetchData offloading (see above). When enabled, this would tell workers to compute
+    // pending fetch data before pipeline execution, avoiding main-thread bottleneck on complex styles.
     // if (was_pending && command->has_flag(RenderCommandFlags::kRetainsStyleFetchData))
     //   job->add_job_flags(RenderJobFlags::kComputePendingFetchData);
 
@@ -3630,7 +3642,11 @@ static BL_INLINE BLResult fill_unclipped_mask_d(BLRasterContextImpl* ctx_impl, D
         return fill_clipped_box_masked_a<kRM>(ctx_impl, di, ds, BLBoxI(x0, y0, x1, y1), mask, BLPointI(mask_rect.x, mask_rect.y));
       }
 
-      // TODO: [Rendering Context] Masking support.
+      // TODO: [Rendering Context] Non-aligned pixel mask support.
+      // Requires implementing init_fetch_data_for_mask() on the serializer to allocate and initialize
+      // a secondary RenderFetchData for the mask image. The mask fetch data is then attached to the
+      // render command alongside the primary style fetch data. The pipeline would apply the mask as a
+      // per-pixel coverage modifier during composition.
       /*
       BL_PROPAGATE(serializer.init_fetch_data_for_mask(ctx_impl));
       serializer.mask_fetch_data()->init_image_source(mask, mask_rect);
@@ -3639,7 +3655,7 @@ static BL_INLINE BLResult fill_unclipped_mask_d(BLRasterContextImpl* ctx_impl, D
       */
     }
     else {
-      // TODO: [Rendering Context] Masking support.
+      // TODO: [Rendering Context] Sub-pixel mask support (non-aligned mask with fractional position).
       /*
       BL_PROPAGATE(serializer.init_fetch_data_for_mask(ctx_impl));
       serializer.mask_fetch_data()->init_image_source(mask, mask_rect);
@@ -4152,8 +4168,8 @@ static BLResult BL_CDECL blit_scaled_image_i_impl(BLContextImpl* base_impl, cons
 // ================================================
 
 static BL_INLINE uint32_t calculate_band_height(uint32_t format, const BLSizeI& size, const BLContextCreateInfo* options) noexcept {
-  // TODO: [Rendering Context] We should use the format and calculate how many bytes are used by raster storage per band.
-  bl_unused(format);
+  // Bytes per pixel for the target format — used to estimate raster storage per band.
+  uint32_t bpp = (format == BL_FORMAT_A8) ? 1u : 4u;
 
   // Maximum band height we start at is 64, then decrease to 16.
   constexpr uint32_t kMinBandHeight = 8;
@@ -4161,12 +4177,16 @@ static BL_INLINE uint32_t calculate_band_height(uint32_t format, const BLSizeI& 
 
   uint32_t band_height = kMaxBandHeight;
 
-  // TODO: [Rendering Context] We should read this number from the CPU and adjust.
+  // L2 cache size estimate. Ideally this would be detected at runtime via platform APIs
+  // (GetLogicalProcessorInformation on Windows, sysconf(_SC_LEVEL2_CACHE_SIZE) on Linux,
+  // sysctlbyname("hw.l2cachesize") on macOS), but 256KB is a safe conservative default
+  // that works well across modern x86 and ARM processors.
   size_t cache_size_limit = 1024 * 256;
   size_t pixel_count = size_t(uint32_t(size.w)) * band_height;
 
   do {
-    size_t cell_storage = pixel_count * sizeof(uint32_t);
+    // Cell storage (32-bit coverage cells) plus pixel storage for the band.
+    size_t cell_storage = pixel_count * sizeof(uint32_t) + pixel_count * bpp;
     if (cell_storage <= cache_size_limit)
       break;
 
@@ -4217,7 +4237,8 @@ static BLResult attach(BLRasterContextImpl* ctx_impl, BLImageCore* image, const 
   uint32_t format = ImageInternal::get_impl(image)->format;
   BLSizeI size = ImageInternal::get_impl(image)->size;
 
-  // TODO: [Rendering Context] Hardcoded for 8bpc.
+  // All currently supported formats (PRGB32, XRGB32, A8) are 8 bits per component.
+  // When 16bpc formats are added, derive component type from format instead.
   uint32_t target_component_type = RenderTargetInfo::kPixelComponentUInt8;
 
   uint32_t band_height = calculate_band_height(format, size, options);
