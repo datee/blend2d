@@ -402,6 +402,238 @@ static void test_stroke() {
   save_image(img, "test_09_stroke.png");
 }
 
+// ----- Test 10: A8 Format Rendering -----
+static void test_a8_format() {
+  printf("\nTest 10: A8 (Alpha-Only) Format Rendering\n");
+
+  // Render to an A8 format image — tests the A8 pipeline (Phase 3).
+  BLImage img(256, 256, BL_FORMAT_A8);
+  BLContext ctx(img);
+  ctx.clear_all();
+
+  // Fill a rectangle with full opacity alpha
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_rect(BLRect(32, 32, 192, 192), BLRgba32(0xFF000000));
+
+  // Fill a smaller rect with 50% alpha
+  ctx.fill_rect(BLRect(80, 80, 96, 96), BLRgba32(0x80000000));
+
+  ctx.end();
+
+  // Read A8 pixels directly (1 byte per pixel)
+  BLImageData data;
+  img.get_data(&data);
+  const uint8_t* pixels = static_cast<const uint8_t*>(data.pixel_data);
+
+  // Outside filled area: should be 0 (transparent)
+  uint8_t outside = pixels[10 * data.stride + 10];
+  if (outside == 0) { printf("  PASS: A8 outside = 0 (transparent)\n"); g_passes++; }
+  else { printf("  FAIL: A8 outside = %u, expected 0\n", unsigned(outside)); g_failures++; }
+
+  // Inside full-alpha rect: should be 255
+  uint8_t full = pixels[64 * data.stride + 64];
+  if (full == 255) { printf("  PASS: A8 full alpha = 255\n"); g_passes++; }
+  else { printf("  FAIL: A8 full alpha = %u, expected 255\n", unsigned(full)); g_failures++; }
+
+  // Inside half-alpha rect: should be ~128
+  uint8_t half = pixels[128 * data.stride + 128];
+  if (half >= 126 && half <= 130) { printf("  PASS: A8 half alpha = %u\n", unsigned(half)); g_passes++; }
+  else { printf("  FAIL: A8 half alpha = %u, expected ~128\n", unsigned(half)); g_failures++; }
+
+  save_image(img, "test_10_a8_format.png");
+}
+
+// ----- Test 11: Band Height with Different Formats -----
+static void test_format_band_height() {
+  printf("\nTest 11: Rendering Different Formats (Band Height)\n");
+
+  // Phase 5.3: band height now uses format-aware bpp.
+  // Verify rendering produces correct output in both PRGB32 and A8 formats,
+  // including large images where band splitting matters.
+  static constexpr int kLargeSize = 512;
+
+  // PRGB32 large image
+  BLImage img32(kLargeSize, kLargeSize, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(img32);
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_all(BLRgba32(0xFF000000));
+
+    // Draw diagonal line of rects to exercise multiple bands
+    for (int i = 0; i < 8; i++) {
+      int x = i * 60;
+      int y = i * 60;
+      ctx.fill_rect(BLRect(x, y, 40, 40), BLRgba32(0xFFFF0000));
+    }
+    ctx.end();
+  }
+
+  // Check first and last rects
+  check_pixel_near(img32, 20, 20, 0xFFFF0000, 0, "PRGB32 band 0: red rect");
+  check_pixel_near(img32, 440, 440, 0xFFFF0000, 0, "PRGB32 band N: red rect");
+  check_pixel_near(img32, 250, 100, 0xFF000000, 0, "PRGB32 between rects: black");
+
+  // A8 large image
+  BLImage img8(kLargeSize, kLargeSize, BL_FORMAT_A8);
+  {
+    BLContext ctx(img8);
+    ctx.clear_all();
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+
+    for (int i = 0; i < 8; i++) {
+      int x = i * 60;
+      int y = i * 60;
+      ctx.fill_rect(BLRect(x, y, 40, 40), BLRgba32(0xFF000000));
+    }
+    ctx.end();
+  }
+
+  BLImageData data8;
+  img8.get_data(&data8);
+  const uint8_t* px8 = static_cast<const uint8_t*>(data8.pixel_data);
+
+  uint8_t a8_first = px8[20 * data8.stride + 20];
+  uint8_t a8_last = px8[440 * data8.stride + 440];
+  uint8_t a8_between = px8[100 * data8.stride + 250];
+
+  if (a8_first == 255) { printf("  PASS: A8 band 0: alpha = 255\n"); g_passes++; }
+  else { printf("  FAIL: A8 band 0: alpha = %u, expected 255\n", unsigned(a8_first)); g_failures++; }
+
+  if (a8_last == 255) { printf("  PASS: A8 band N: alpha = 255\n"); g_passes++; }
+  else { printf("  FAIL: A8 band N: alpha = %u, expected 255\n", unsigned(a8_last)); g_failures++; }
+
+  if (a8_between == 0) { printf("  PASS: A8 between rects: alpha = 0\n"); g_passes++; }
+  else { printf("  FAIL: A8 between rects: alpha = %u, expected 0\n", unsigned(a8_between)); g_failures++; }
+
+  save_image(img32, "test_11_prgb32_large.png");
+  save_image(img8, "test_11_a8_large.png");
+}
+
+// ----- Test 12: Nested Save/Restore with Clipping -----
+static void test_save_restore_clipping() {
+  printf("\nTest 12: Nested Save/Restore with Clipping\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFF000000));  // Black background
+
+  // Outer clip
+  ctx.save();
+  ctx.clip_to_rect(BLRect(32, 32, 192, 192));
+  ctx.fill_all(BLRgba32(0xFF0000FF));  // Blue in outer clip
+
+  // Inner clip (further restricted)
+  ctx.save();
+  ctx.clip_to_rect(BLRect(80, 80, 96, 96));
+  ctx.fill_all(BLRgba32(0xFFFF0000));  // Red in inner clip
+  ctx.restore();
+
+  // After inner restore, outer clip should be active again
+  ctx.fill_rect(BLRect(0, 0, 256, 256), BLRgba32(0xFF00FF00));  // Green fills outer clip
+  ctx.restore();
+
+  ctx.end();
+
+  // Outside all clips: black
+  check_pixel_near(img, 10, 10, 0xFF000000, 0, "Outside all clips (black)");
+
+  // In outer clip but outside inner: green (was blue, then overwritten by green after inner restore)
+  check_pixel_near(img, 50, 50, 0xFF00FF00, 0, "Outer clip region (green)");
+
+  // In inner clip region: green (red was drawn, then green overwrote after restore)
+  check_pixel_near(img, 128, 128, 0xFF00FF00, 0, "Inner clip region (green after restore)");
+
+  // Just outside outer clip: black
+  check_pixel_near(img, 30, 128, 0xFF000000, 0, "Just outside outer clip (black)");
+
+  save_image(img, "test_12_nested_clipping.png");
+}
+
+// ----- Test 13: Clipping with Transform -----
+static void test_clipping_with_transform() {
+  printf("\nTest 13: Clipping with Transform\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFFFFFFFF));  // White background
+
+  // Apply rotation then clip — tests that clip_to_rect_d_impl maps through transform
+  ctx.save();
+  ctx.rotate(0.3, 128.0, 128.0);  // ~17 degrees
+  ctx.clip_to_rect(BLRect(64, 64, 128, 128));
+  ctx.fill_all(BLRgba32(0xFFFF0000));  // Red fills the rotated clipped region
+  ctx.restore();
+
+  ctx.end();
+
+  // Center should be red (inside the rotated clip)
+  check_pixel_near(img, 128, 128, 0xFFFF0000, 2, "Center of rotated clip (red)");
+
+  // Far corners should be white (outside rotated clip)
+  check_pixel_near(img, 10, 10, 0xFFFFFFFF, 0, "Corner outside rotated clip (white)");
+  check_pixel_near(img, 245, 245, 0xFFFFFFFF, 0, "Opposite corner (white)");
+
+  save_image(img, "test_13_clip_transform.png");
+}
+
+// ----- Test 14: Multiple Overlapping Fills -----
+static void test_overlapping_fills() {
+  printf("\nTest 14: Multiple Overlapping SrcOver Fills\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFFFFFFFF));  // White background
+
+  // Three overlapping semi-transparent circles (additive color mixing via SrcOver)
+  ctx.set_comp_op(BL_COMP_OP_SRC_OVER);
+
+  BLPath c1, c2, c3;
+  c1.add_circle(BLCircle(100, 100, 70));
+  c2.add_circle(BLCircle(156, 100, 70));
+  c3.add_circle(BLCircle(128, 156, 70));
+
+  ctx.fill_path(c1, BLRgba32(0x80FF0000));  // Red
+  ctx.fill_path(c2, BLRgba32(0x8000FF00));  // Green
+  ctx.fill_path(c3, BLRgba32(0x800000FF));  // Blue
+
+  ctx.end();
+
+  // Center of red circle (no overlap): should be pinkish (red over white)
+  uint32_t p_red = get_pixel(img, 70, 100);
+  if (pixel_r(p_red) > pixel_g(p_red) && pixel_r(p_red) > pixel_b(p_red)) {
+    printf("  PASS: Red circle dominant R (%u > G=%u, B=%u)\n",
+           unsigned(pixel_r(p_red)), unsigned(pixel_g(p_red)), unsigned(pixel_b(p_red)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Red circle R not dominant: R=%u G=%u B=%u\n",
+           unsigned(pixel_r(p_red)), unsigned(pixel_g(p_red)), unsigned(pixel_b(p_red)));
+    g_failures++;
+  }
+
+  // Center of overlap between all three circles: should have all channels mixed
+  uint32_t p_center = get_pixel(img, 128, 120);
+  bool has_r = pixel_r(p_center) > 50;
+  bool has_g = pixel_g(p_center) > 50;
+  bool has_b = pixel_b(p_center) > 50;
+  if (has_r && has_g && has_b) {
+    printf("  PASS: Triple overlap has all channels (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(p_center)), unsigned(pixel_g(p_center)), unsigned(pixel_b(p_center)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Triple overlap missing channels: R=%u G=%u B=%u\n",
+           unsigned(pixel_r(p_center)), unsigned(pixel_g(p_center)), unsigned(pixel_b(p_center)));
+    g_failures++;
+  }
+
+  save_image(img, "test_14_overlapping_fills.png");
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -419,6 +651,11 @@ int main(int argc, char* argv[]) {
   test_image_blit();
   test_comp_ops();
   test_stroke();
+  test_a8_format();
+  test_format_band_height();
+  test_save_restore_clipping();
+  test_clipping_with_transform();
+  test_overlapping_fills();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
