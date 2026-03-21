@@ -76,9 +76,11 @@ BL_DEFINE_ENUM(BLImageEffectType) {
   BL_IMAGE_EFFECT_TYPE_BRIGHTNESS_CONTRAST = 4,
   //! Saturation adjustment. `radius` field is used as saturation factor (0 = grayscale, 1 = unchanged, 2 = oversaturated).
   BL_IMAGE_EFFECT_TYPE_SATURATION = 5,
+  //! Flash-style tint: lerp between original color and tint color. `radius` = amount (0=original, 1=solid tint).
+  BL_IMAGE_EFFECT_TYPE_TINT = 6,
 
   //! Maximum value of `BLImageEffectType`.
-  BL_IMAGE_EFFECT_TYPE_MAX_VALUE = 5
+  BL_IMAGE_EFFECT_TYPE_MAX_VALUE = 6
 
   BL_FORCE_ENUM_UINT32(BL_IMAGE_EFFECT_TYPE)
 };
@@ -100,10 +102,16 @@ struct BLImageEffectOptions {
   double offset_x;
   //! Vertical offset for drop shadow.
   double offset_y;
-  //! Color for glow or drop shadow (0xAARRGGBB).
+  //! Color for glow, drop shadow, or tint (0xAARRGGBB).
   uint32_t color;
   //! Flags controlling effect behavior.
   uint32_t flags;
+  //! Effect opacity: 0.0 (invisible) to 1.0 (full strength). Default 1.0. Set to 0 to use default (1.0).
+  double opacity;
+  //! Spread/choke for glow/shadow: 0.0 (soft) to 1.0 (hard edge). Thickens the alpha before blurring.
+  double spread;
+  //! Strength/intensity multiplier for glow. Values > 1.0 make the glow brighter without changing size.
+  double strength;
 
 #ifdef __cplusplus
   BL_INLINE void reset() noexcept { *this = BLImageEffectOptions{}; }
@@ -643,6 +651,16 @@ public:
     BLImageEffectOptions opts{};
     opts.type = BL_IMAGE_EFFECT_TYPE_SATURATION;
     opts.radius = factor;
+    return bl_image_apply_effect(&dst, &src, &opts);
+  }
+
+  //! Convenience: Flash-style tint. Lerps between original and tint color.
+  //! `amount`: 0.0 = original, 1.0 = solid tint color (alpha preserved).
+  static BL_INLINE_NODEBUG BLResult tint(BLImage& dst, const BLImage& src, BLRgba32 color, double amount) noexcept {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_TINT;
+    opts.radius = amount;
+    opts.color = color.value;
     return bl_image_apply_effect(&dst, &src, &opts);
   }
 

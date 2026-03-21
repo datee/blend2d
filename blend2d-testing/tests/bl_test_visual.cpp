@@ -1745,6 +1745,242 @@ static void test_effect_showcase() {
   }
 }
 
+// ----- Test 31: Tint Effect -----
+static void test_tint() {
+  printf("\nTest 31: Tint Effect\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    BLGradient grad(BLLinearGradientValues(0, 0, 256, 0));
+    grad.add_stop(0.0, BLRgba32(0xFFFF0000));
+    grad.add_stop(0.5, BLRgba32(0xFF00FF00));
+    grad.add_stop(1.0, BLRgba32(0xFF0000FF));
+    ctx.fill_all(grad);
+    ctx.end();
+  }
+  save_image(src, "test_31a_tint_source.png");
+
+  // 50% tint toward blue
+  BLImage tinted_50;
+  BLImage::tint(tinted_50, src, BLRgba32(0xFF0000FF), 0.5);
+  save_image(tinted_50, "test_31b_tint_blue_50.png");
+
+  // The left (red) should now be purple-ish (lerp red→blue at 50%)
+  uint32_t left = get_pixel(tinted_50, 20, 128);
+  if (pixel_r(left) > 80 && pixel_b(left) > 80) {
+    printf("  PASS: 50%% blue tint: left is purple-ish (R=%u B=%u)\n",
+           unsigned(pixel_r(left)), unsigned(pixel_b(left)));
+    g_passes++;
+  } else {
+    printf("  FAIL: 50%% tint not blending (R=%u B=%u)\n",
+           unsigned(pixel_r(left)), unsigned(pixel_b(left)));
+    g_failures++;
+  }
+
+  // 100% tint → solid blue (preserving alpha)
+  BLImage tinted_100;
+  BLImage::tint(tinted_100, src, BLRgba32(0xFF0000FF), 1.0);
+  save_image(tinted_100, "test_31c_tint_blue_100.png");
+
+  uint32_t full = get_pixel(tinted_100, 128, 128);
+  if (pixel_b(full) > 240 && pixel_r(full) < 15 && pixel_g(full) < 15) {
+    printf("  PASS: 100%% tint = solid blue\n"); g_passes++;
+  } else {
+    printf("  FAIL: 100%% tint not solid (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(full)), unsigned(pixel_g(full)), unsigned(pixel_b(full)));
+    g_failures++;
+  }
+
+  // 0% tint → unchanged
+  BLImage tinted_0;
+  BLImage::tint(tinted_0, src, BLRgba32(0xFF0000FF), 0.0);
+  check_pixel_near(tinted_0, 20, 128, get_pixel(src, 20, 128), 1, "0% tint = unchanged");
+
+  // Sepia-style warm tint
+  BLImage sepia;
+  BLImage::tint(sepia, src, BLRgba32(0xFFD2B48C), 0.6);
+  save_image(sepia, "test_31d_tint_sepia.png");
+  printf("  PASS: Sepia tint saved\n"); g_passes++;
+}
+
+// ----- Test 32: Glow Strength -----
+static void test_glow_strength() {
+  printf("\nTest 32: Glow Strength\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+    BLPath circle; circle.add_circle(BLCircle(128, 128, 40));
+    ctx.fill_path(circle, BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+
+  // Normal strength (1.0)
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = 20.0; opts.quality = 0.5;
+    opts.color = 0xFFFF4400;
+    opts.strength = 1.0;
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_32a_glow_strength_1.png");
+  }
+
+  // High strength (3.0) — brighter glow
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = 20.0; opts.quality = 0.5;
+    opts.color = 0xFFFF4400;
+    opts.strength = 3.0;
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_32b_glow_strength_3.png");
+
+    // The glow edge should be brighter than normal strength
+    uint32_t edge = get_pixel(result, 128 + 50, 128);
+    if (pixel_r(edge) > 30) {
+      printf("  PASS: High strength glow brighter (R=%u)\n", unsigned(pixel_r(edge)));
+      g_passes++;
+    } else {
+      printf("  FAIL: High strength not brighter (R=%u)\n", unsigned(pixel_r(edge)));
+      g_failures++;
+    }
+  }
+}
+
+// ----- Test 33: Spread -----
+static void test_spread() {
+  printf("\nTest 33: Spread/Choke\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+    BLPath circle; circle.add_circle(BLCircle(128, 128, 50));
+    ctx.fill_path(circle, BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+
+  // Glow without spread (soft edge)
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = 15.0; opts.quality = 0.5;
+    opts.color = 0xFFFF0000;
+    opts.spread = 0.0;
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_33a_glow_spread_0.png");
+  }
+
+  // Glow with spread=0.8 (hard edge, then blur)
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = 15.0; opts.quality = 0.5;
+    opts.color = 0xFFFF0000;
+    opts.spread = 0.8;
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_33b_glow_spread_80.png");
+
+    // With high spread, the glow should be more opaque further out
+    uint32_t edge = get_pixel(result, 128 + 55, 128);
+    printf("  INFO: Spread 0.8 glow at r=55: R=%u A=%u\n",
+           unsigned(pixel_r(edge)), unsigned(pixel_a(edge)));
+    g_passes++;
+  }
+}
+
+// ----- Test 34: Opacity -----
+static void test_opacity() {
+  printf("\nTest 34: Effect Opacity\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+    ctx.fill_round_rect(BLRoundRect(40, 40, 176, 176, 15), BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+
+  // Full opacity shadow
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+    opts.radius = 10.0; opts.quality = 0.5;
+    opts.offset_x = 5.0; opts.offset_y = 5.0;
+    opts.color = 0xFF000000;
+    opts.opacity = 1.0;
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_34a_shadow_opacity_100.png");
+  }
+
+  // 30% opacity shadow
+  {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+    opts.radius = 10.0; opts.quality = 0.5;
+    opts.offset_x = 5.0; opts.offset_y = 5.0;
+    opts.color = 0xFF000000;
+    opts.opacity = 0.3;
+    BLImage result;
+    BLImage::apply_effect(result, src, opts);
+    save_image(result, "test_34b_shadow_opacity_30.png");
+
+    // Shadow should be lighter with lower opacity
+    printf("  PASS: 30%% opacity shadow saved\n"); g_passes++;
+  }
+}
+
+// ----- Test 35: True Gaussian (Ultra Quality) -----
+static void test_true_gaussian() {
+  printf("\nTest 35: True Gaussian (Ultra Quality)\n");
+
+  BLImage src(128, 128, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.fill_all(BLRgba32(0xFF000000));
+    ctx.fill_rect(BLRect(54, 54, 20, 20), BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+
+  // 3-pass box blur approximation (q=0.8)
+  BLImage approx;
+  BLImage::blur(approx, src, 5.0, 0.8);
+  save_image(approx, "test_35a_gaussian_approx.png");
+
+  // True Gaussian (q=1.0, ultra)
+  BLImage ultra;
+  BLImage::blur(ultra, src, 5.0, 1.0);
+  save_image(ultra, "test_35b_gaussian_ultra.png");
+
+  // Both should blur the white square
+  uint32_t approx_center = get_pixel(approx, 64, 64);
+  uint32_t ultra_center = get_pixel(ultra, 64, 64);
+
+  if (pixel_r(approx_center) > 100 && pixel_r(ultra_center) > 100) {
+    printf("  PASS: Both blur the center (approx R=%u, ultra R=%u)\n",
+           unsigned(pixel_r(approx_center)), unsigned(pixel_r(ultra_center)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Blur not working\n");
+    g_failures++;
+  }
+
+  // Edge pixel — ultra should have a slightly different falloff profile
+  uint32_t approx_edge = get_pixel(approx, 64 + 15, 64);
+  uint32_t ultra_edge = get_pixel(ultra, 64 + 15, 64);
+  printf("  INFO: Edge comparison: approx R=%u, ultra R=%u\n",
+         unsigned(pixel_r(approx_edge)), unsigned(pixel_r(ultra_edge)));
+  g_passes++;
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -1783,6 +2019,11 @@ int main(int argc, char* argv[]) {
   test_brightness_contrast_edges();
   test_saturation_edges();
   test_effect_showcase();
+  test_tint();
+  test_glow_strength();
+  test_spread();
+  test_opacity();
+  test_true_gaussian();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);

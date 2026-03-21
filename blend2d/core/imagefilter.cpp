@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Zlib
 
 #include <blend2d/core/api-build_p.h>
+#include <cmath>
 #include <blend2d/core/context.h>
 #include <blend2d/core/image_p.h>
 #include <blend2d/core/imagefilter_p.h>
@@ -168,6 +169,205 @@ static void BL_CDECL box_blur_vert_a8(
       acc += src[yi_add * src_stride + x] - src[yi_sub * src_stride + x];
     }
   }
+}
+
+// bl::ImageFilter - True Gaussian Kernel Convolution
+// ==================================================
+
+// Horizontal pass with weighted kernel for true Gaussian blur.
+static void BL_CDECL gaussian_conv_horz_prgb32(
+    uint8_t* BL_RESTRICT dst, intptr_t dst_stride,
+    const uint8_t* BL_RESTRICT src, intptr_t src_stride,
+    int w, int h, int y_start, int y_end,
+    const int32_t* weights, int kernel_radius, int weight_shift) noexcept {
+
+  const uint8_t* src_line = src + y_start * src_stride;
+  uint8_t* dst_line = dst + y_start * dst_stride;
+
+  for (int y = y_start; y < y_end; y++) {
+    const uint32_t* sp = reinterpret_cast<const uint32_t*>(src_line);
+    uint32_t* dp = reinterpret_cast<uint32_t*>(dst_line);
+
+    for (int x = 0; x < w; x++) {
+      int32_t acc_b = 0, acc_g = 0, acc_r = 0, acc_a = 0;
+
+      for (int k = -kernel_radius; k <= kernel_radius; k++) {
+        int xi = bl_clamp(x + k, 0, w - 1);
+        uint32_t p = sp[xi];
+        int32_t wt = weights[k + kernel_radius];
+        acc_b += int32_t((p >>  0) & 0xFF) * wt;
+        acc_g += int32_t((p >>  8) & 0xFF) * wt;
+        acc_r += int32_t((p >> 16) & 0xFF) * wt;
+        acc_a += int32_t((p >> 24) & 0xFF) * wt;
+      }
+
+      dp[x] = uint32_t(bl_clamp(acc_b >> weight_shift, 0, 255))       |
+              uint32_t(bl_clamp(acc_g >> weight_shift, 0, 255)) << 8  |
+              uint32_t(bl_clamp(acc_r >> weight_shift, 0, 255)) << 16 |
+              uint32_t(bl_clamp(acc_a >> weight_shift, 0, 255)) << 24;
+    }
+
+    src_line += src_stride;
+    dst_line += dst_stride;
+  }
+}
+
+// Vertical pass with weighted kernel for true Gaussian blur.
+static void BL_CDECL gaussian_conv_vert_prgb32(
+    uint8_t* BL_RESTRICT dst, intptr_t dst_stride,
+    const uint8_t* BL_RESTRICT src, intptr_t src_stride,
+    int w, int h, int x_start, int x_end,
+    const int32_t* weights, int kernel_radius, int weight_shift) noexcept {
+
+  for (int x = x_start; x < x_end; x++) {
+    for (int y = 0; y < h; y++) {
+      int32_t acc_b = 0, acc_g = 0, acc_r = 0, acc_a = 0;
+
+      for (int k = -kernel_radius; k <= kernel_radius; k++) {
+        int yi = bl_clamp(y + k, 0, h - 1);
+        uint32_t p = *reinterpret_cast<const uint32_t*>(src + yi * src_stride + x * 4);
+        int32_t wt = weights[k + kernel_radius];
+        acc_b += int32_t((p >>  0) & 0xFF) * wt;
+        acc_g += int32_t((p >>  8) & 0xFF) * wt;
+        acc_r += int32_t((p >> 16) & 0xFF) * wt;
+        acc_a += int32_t((p >> 24) & 0xFF) * wt;
+      }
+
+      *reinterpret_cast<uint32_t*>(dst + y * dst_stride + x * 4) =
+        uint32_t(bl_clamp(acc_b >> weight_shift, 0, 255))       |
+        uint32_t(bl_clamp(acc_g >> weight_shift, 0, 255)) << 8  |
+        uint32_t(bl_clamp(acc_r >> weight_shift, 0, 255)) << 16 |
+        uint32_t(bl_clamp(acc_a >> weight_shift, 0, 255)) << 24;
+    }
+  }
+}
+
+// Apply true Gaussian kernel convolution (separable: H then V).
+static BLResult true_gaussian_blur(BLImage& dst, const BLImage& src, double radius) noexcept {
+  BLImageData src_data;
+  BL_PROPAGATE(src.get_data(&src_data));
+
+  int w = src_data.size.w;
+  int h = src_data.size.h;
+  if (w <= 0 || h <= 0 || radius <= 0.0)
+    return BL_SUCCESS;
+
+  double sigma = radius / 3.0;
+  int kernel_radius = int(Math::ceil(sigma * 3.0));
+  if (kernel_radius < 1) kernel_radius = 1;
+  int kernel_size = kernel_radius * 2 + 1;
+
+  // Compute kernel weights as fixed-point (shift=16).
+  constexpr int kWeightShift = 16;
+  int32_t* weights = static_cast<int32_t*>(malloc(size_t(kernel_size) * sizeof(int32_t)));
+  if (!weights) return bl_make_error(BL_ERROR_OUT_OF_MEMORY);
+
+  double weight_sum = 0.0;
+  for (int i = 0; i < kernel_size; i++) {
+    double x = double(i - kernel_radius);
+    double w_f = ::exp(-(x * x) / (2.0 * sigma * sigma));
+    weights[i] = int32_t(w_f * 65536.0);
+    weight_sum += w_f;
+  }
+
+  // Normalize so weights sum to (1 << kWeightShift).
+  double normalize = double(1 << kWeightShift) / weight_sum;
+  for (int i = 0; i < kernel_size; i++) {
+    double x = double(i - kernel_radius);
+    weights[i] = int32_t(::exp(-(x * x) / (2.0 * sigma * sigma)) * normalize + 0.5);
+  }
+
+  uint32_t format = src_data.format;
+
+  // Horizontal pass: src → tmp
+  BLImage tmp(w, h, BLFormat(format));
+  BLImageData tmp_data;
+  BL_PROPAGATE(tmp.make_mutable(&tmp_data));
+
+  gaussian_conv_horz_prgb32(
+    static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
+    static_cast<const uint8_t*>(src_data.pixel_data), src_data.stride,
+    w, h, 0, h, weights, kernel_radius, kWeightShift);
+
+  // Vertical pass: tmp → dst
+  BL_PROPAGATE(bl_image_create(static_cast<BLImageCore*>(&dst), w, h, BLFormat(format)));
+  BLImageData dst_data;
+  BL_PROPAGATE(dst.make_mutable(&dst_data));
+
+  gaussian_conv_vert_prgb32(
+    static_cast<uint8_t*>(dst_data.pixel_data), dst_data.stride,
+    static_cast<uint8_t*>(tmp_data.pixel_data), tmp_data.stride,
+    w, h, 0, w, weights, kernel_radius, kWeightShift);
+
+  free(weights);
+  return BL_SUCCESS;
+}
+
+// bl::ImageFilter - Spread (Choke Alpha)
+// =======================================
+
+// Apply spread to an A8 mask: thickens the alpha by lerping toward fully opaque.
+// spread=0 → unchanged, spread=1 → fully hard edge (binary alpha).
+static BLResult apply_spread_a8(BLImage& mask, double spread) noexcept {
+  if (spread <= 0.0) return BL_SUCCESS;
+  spread = bl_clamp(spread, 0.0, 1.0);
+
+  BLImageData data;
+  BL_PROPAGATE(mask.make_mutable(&data));
+
+  int w = data.size.w;
+  int h = data.size.h;
+  uint8_t* line = static_cast<uint8_t*>(data.pixel_data);
+
+  // Spread: remap alpha curve. spread=0 → linear, spread=1 → step function at threshold.
+  // Formula: new_alpha = clamp(alpha * (1 + spread * factor) - spread * threshold, 0, 255)
+  // Simpler: use a power curve. spread=0 → gamma=1 (linear), spread=1 → gamma→0 (step).
+  double gamma = 1.0 - spread * 0.9; // gamma from 1.0 down to 0.1
+
+  uint8_t lut[256];
+  for (int i = 0; i < 256; i++) {
+    double v = double(i) / 255.0;
+    double adjusted = ::pow(v, gamma);
+    lut[i] = uint8_t(bl_clamp(int(adjusted * 255.0 + 0.5), 0, 255));
+  }
+
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++)
+      line[x] = lut[line[x]];
+    line += data.stride;
+  }
+  return BL_SUCCESS;
+}
+
+// bl::ImageFilter - Opacity
+// =========================
+
+// Apply opacity to a PRGB32 image: scale all channels by opacity factor.
+static BLResult apply_opacity_prgb32(BLImage& img, double opacity) noexcept {
+  if (opacity >= 1.0) return BL_SUCCESS;
+  opacity = bl_clamp(opacity, 0.0, 1.0);
+
+  BLImageData data;
+  BL_PROPAGATE(img.make_mutable(&data));
+
+  int w = data.size.w;
+  int h = data.size.h;
+  uint32_t op = uint32_t(opacity * 256.0 + 0.5);
+  uint8_t* line = static_cast<uint8_t*>(data.pixel_data);
+
+  for (int y = 0; y < h; y++) {
+    uint32_t* row = reinterpret_cast<uint32_t*>(line);
+    for (int x = 0; x < w; x++) {
+      uint32_t p = row[x];
+      uint32_t b = ((p >>  0) & 0xFF) * op >> 8;
+      uint32_t g = ((p >>  8) & 0xFF) * op >> 8;
+      uint32_t r = ((p >> 16) & 0xFF) * op >> 8;
+      uint32_t a = ((p >> 24) & 0xFF) * op >> 8;
+      row[x] = b | (g << 8) | (r << 16) | (a << 24);
+    }
+    line += data.stride;
+  }
+  return BL_SUCCESS;
 }
 
 // bl::ImageFilter - Threading
@@ -505,6 +705,9 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
   double radius = options->radius;
   double quality = bl_clamp(options->quality, 0.0, 1.0);
 
+  double opacity = (options->opacity > 0.0) ? bl_clamp(options->opacity, 0.0, 1.0) : 1.0;
+  double spread = bl_clamp(options->spread, 0.0, 1.0);
+
   // Automatic algorithm selection based on quality tier.
   auto select_blur = [&](BLImage& blur_dst, const BLImage& blur_src) -> BLResult {
     if (quality < 0.3) {
@@ -514,13 +717,16 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
         static_cast<const BLImageCore*>(&blur_src),
         BL_IMAGE_FILTER_TYPE_BOX_BLUR, radius, quality);
     }
-    else {
-      // Medium/High/Ultra: Gaussian approximation via 3-pass box blur.
-      // (Ultra with true Gaussian kernel would go here when implemented.)
+    else if (quality < 0.95) {
+      // Medium/High: Gaussian approximation via 3-pass box blur.
       return bl_image_filter(
         static_cast<BLImageCore*>(&blur_dst),
         static_cast<const BLImageCore*>(&blur_src),
         BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR, radius, quality);
+    }
+    else {
+      // Ultra: true Gaussian kernel convolution (mathematically exact).
+      return bl::true_gaussian_blur(blur_dst, blur_src, radius);
     }
   };
 
@@ -543,9 +749,11 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
     bool inner = (flags & BL_IMAGE_EFFECT_FLAG_INNER) != 0;
     bool knockout = (flags & BL_IMAGE_EFFECT_FLAG_KNOCKOUT) != 0;
 
-    // Step 1: Extract alpha and blur it to create the glow shape.
+    // Step 1: Extract alpha, apply spread (choke), then blur to create the glow shape.
     BLImage alpha_mask;
     BL_PROPAGATE(bl::extract_alpha(alpha_mask, src->dcast()));
+    if (spread > 0.0)
+      BL_PROPAGATE(bl::apply_spread_a8(alpha_mask, spread));
 
     BLImage blurred_mask;
     BL_PROPAGATE(bl_image_filter(
@@ -557,6 +765,27 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
     // Step 2: Colorize the blurred mask with the glow color.
     BLImage glow_layer;
     BL_PROPAGATE(bl::colorize_mask(glow_layer, blurred_mask, options->color));
+
+    // Apply strength: multiply glow brightness (values > 1 make it brighter).
+    double strength = (options->strength > 0.0) ? options->strength : 1.0;
+    if (strength != 1.0) {
+      BLImageData gd;
+      glow_layer.make_mutable(&gd);
+      uint8_t* gp = static_cast<uint8_t*>(gd.pixel_data);
+      int32_t s = int32_t(strength * 256.0 + 0.5);
+      for (int y = 0; y < h; y++) {
+        uint32_t* row = reinterpret_cast<uint32_t*>(gp);
+        for (int x = 0; x < w; x++) {
+          uint32_t p = row[x];
+          uint32_t b = bl_min(uint32_t(int32_t((p >>  0) & 0xFF) * s >> 8), 255u);
+          uint32_t g = bl_min(uint32_t(int32_t((p >>  8) & 0xFF) * s >> 8), 255u);
+          uint32_t r = bl_min(uint32_t(int32_t((p >> 16) & 0xFF) * s >> 8), 255u);
+          uint32_t a = bl_min(uint32_t(int32_t((p >> 24) & 0xFF) * s >> 8), 255u);
+          row[x] = b | (g << 8) | (r << 16) | (a << 24);
+        }
+        gp += gd.stride;
+      }
+    }
 
     // Step 3: For inner glow, mask the glow to only appear inside the original shape.
     // For outer glow, the glow naturally appears outside (blurred edges extend beyond shape).
@@ -639,6 +868,10 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
       }
     }
 
+    // Apply opacity to glow layer.
+    if (opacity < 1.0)
+      bl::apply_opacity_prgb32(glow_layer, opacity);
+
     // Step 4: Composite.
     BLImage result(w, h, BL_FORMAT_PRGB32);
     {
@@ -682,9 +915,11 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
     int offset_x = int(options->offset_x);
     int offset_y = int(options->offset_y);
 
-    // Step 1: Extract alpha from source.
+    // Step 1: Extract alpha, apply spread, from source.
     BLImage alpha_mask;
     BL_PROPAGATE(bl::extract_alpha(alpha_mask, src->dcast()));
+    if (spread > 0.0)
+      BL_PROPAGATE(bl::apply_spread_a8(alpha_mask, spread));
 
     BLImage shadow_layer;
 
@@ -747,6 +982,10 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
         }
       }
 
+      // Apply opacity.
+      if (opacity < 1.0)
+        bl::apply_opacity_prgb32(shadow_layer, opacity);
+
       // Composite: inner shadow on/with original.
       BLImage result(w, h, BL_FORMAT_PRGB32);
       {
@@ -781,6 +1020,8 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
 
     BLImage shadow;
     BL_PROPAGATE(bl::colorize_mask(shadow, blurred_mask, options->color));
+    if (opacity < 1.0)
+      bl::apply_opacity_prgb32(shadow, opacity);
 
     BLImage result(out_w, out_h, BL_FORMAT_PRGB32);
     {
@@ -953,6 +1194,83 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
             nb = nb * int32_t(a) / 255;
           }
           drow[x] = uint32_t(nb) | (uint32_t(ng) << 8) | (uint32_t(nr) << 16) | (a << 24);
+        }
+        sp += src_data.stride;
+        dp += dst_data.stride;
+      }
+    }
+
+    return BL_SUCCESS;
+  }
+
+  if (options->type == BL_IMAGE_EFFECT_TYPE_TINT) {
+    // Flash-style tint: lerp between original color and tint color.
+    // result = original * (1 - amount) + tintColor * amount
+    // Alpha is preserved from the original.
+    BLImagePrivateImpl* si = get_impl(src);
+    int w = si->size.w;
+    int h = si->size.h;
+
+    double amount = bl_clamp(options->radius, 0.0, 1.0);
+    uint32_t tint_color = options->color;
+    uint32_t tr = (tint_color >> 16) & 0xFF;
+    uint32_t tg = (tint_color >>  8) & 0xFF;
+    uint32_t tb = (tint_color >>  0) & 0xFF;
+
+    // Fixed-point: 8.8
+    int32_t amt = int32_t(amount * 256.0 + 0.5);
+    int32_t inv = 256 - amt;
+
+    BLImage src_copy;
+    if (dst == src) {
+      src_copy = src->dcast();
+      BL_PROPAGATE(bl_image_create(dst, w, h, BLFormat(si->format)));
+    } else {
+      BL_PROPAGATE(bl_image_create(dst, w, h, BLFormat(si->format)));
+    }
+
+    BLImageData src_data, dst_data;
+    if (src_copy.width() > 0)
+      src_copy.get_data(&src_data);
+    else
+      src->dcast().get_data(&src_data);
+    dst->dcast().make_mutable(&dst_data);
+
+    const uint8_t* sp = static_cast<const uint8_t*>(src_data.pixel_data);
+    uint8_t* dp = static_cast<uint8_t*>(dst_data.pixel_data);
+
+    if (si->format == BL_FORMAT_PRGB32 || si->format == BL_FORMAT_XRGB32) {
+      for (int y = 0; y < h; y++) {
+        const uint32_t* srow = reinterpret_cast<const uint32_t*>(sp);
+        uint32_t* drow = reinterpret_cast<uint32_t*>(dp);
+        for (int x = 0; x < w; x++) {
+          uint32_t p = srow[x];
+          uint32_t a = (p >> 24) & 0xFF;
+
+          // Unpremultiply.
+          uint32_t r, g, b;
+          if (a > 0 && a < 255) {
+            r = bl_min(((p >> 16) & 0xFF) * 255 / a, 255u);
+            g = bl_min(((p >>  8) & 0xFF) * 255 / a, 255u);
+            b = bl_min(((p >>  0) & 0xFF) * 255 / a, 255u);
+          } else {
+            r = (p >> 16) & 0xFF;
+            g = (p >>  8) & 0xFF;
+            b = (p >>  0) & 0xFF;
+          }
+
+          // Lerp: original * (1-amount) + tint * amount
+          r = uint32_t((int32_t(r) * inv + int32_t(tr) * amt) >> 8);
+          g = uint32_t((int32_t(g) * inv + int32_t(tg) * amt) >> 8);
+          b = uint32_t((int32_t(b) * inv + int32_t(tb) * amt) >> 8);
+
+          // Repremultiply.
+          if (a < 255) {
+            r = r * a / 255;
+            g = g * a / 255;
+            b = b * a / 255;
+          }
+          drow[x] = b | (g << 8) | (r << 16) | (a << 24);
         }
         sp += src_data.stride;
         dp += dst_data.stride;
