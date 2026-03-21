@@ -47,6 +47,21 @@ BL_DEFINE_ENUM(BLImageScaleFilter) {
   BL_FORCE_ENUM_UINT32(BL_IMAGE_SCALE_FILTER)
 };
 
+//! Type of image filter used by `bl_image_filter()`.
+BL_DEFINE_ENUM(BLImageFilterType) {
+  //! No filter.
+  BL_IMAGE_FILTER_TYPE_NONE = 0,
+  //! Box blur (uniform averaging window, O(1) per pixel via sliding window).
+  BL_IMAGE_FILTER_TYPE_BOX_BLUR = 1,
+  //! Gaussian blur (approximated via 3-pass box blur for performance).
+  BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR = 2,
+
+  //! Maximum value of `BLImageFilterType`.
+  BL_IMAGE_FILTER_TYPE_MAX_VALUE = 2
+
+  BL_FORCE_ENUM_UINT32(BL_IMAGE_FILTER_TYPE)
+};
+
 //! \}
 
 //! \name BLImage - Structs
@@ -161,6 +176,7 @@ BL_API BLResult BL_CDECL bl_image_make_mutable(BLImageCore* self, BLImageData* d
 BL_API BLResult BL_CDECL bl_image_convert(BLImageCore* self, BLFormat format) BL_NOEXCEPT_C;
 BL_API bool BL_CDECL bl_image_equals(const BLImageCore* a, const BLImageCore* b) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_scale(BLImageCore* dst, const BLImageCore* src, const BLSizeI* size, BLImageScaleFilter filter) BL_NOEXCEPT_C;
+BL_API BLResult BL_CDECL bl_image_filter(BLImageCore* dst, const BLImageCore* src, BLImageFilterType type, double radius) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_read_from_file(BLImageCore* self, const char* file_name, const BLArrayCore* codecs) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_read_from_data(BLImageCore* self, const void* data, size_t size, const BLArrayCore* codecs) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_write_to_file(const BLImageCore* self, const char* file_name, const BLImageCodecCore* codec) BL_NOEXCEPT_C;
@@ -505,6 +521,17 @@ public:
   //! be re-created.
   static BL_INLINE_NODEBUG BLResult scale(BLImage& dst, const BLImage& src, const BLSizeI& size, BLImageScaleFilter filter) noexcept {
     return bl_image_scale(&dst, &src, &size, filter);
+  }
+
+  //! Applies an image filter to `src` and writes the result to `dst`.
+  //!
+  //! Supported filter types:
+  //!   - `BL_IMAGE_FILTER_TYPE_BOX_BLUR` - Fast box blur with the given radius.
+  //!   - `BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR` - Gaussian blur approximated via 3-pass box blur.
+  //!
+  //! The `radius` parameter controls the blur strength in pixels. A radius of 0 produces no effect.
+  static BL_INLINE_NODEBUG BLResult filter(BLImage& dst, const BLImage& src, BLImageFilterType type, double radius) noexcept {
+    return bl_image_filter(&dst, &src, type, radius);
   }
 };
 

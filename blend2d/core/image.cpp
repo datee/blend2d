@@ -16,6 +16,7 @@
 #include <blend2d/core/pixelconverter_p.h>
 #include <blend2d/core/runtime_p.h>
 #include <blend2d/support/intops_p.h>
+#include <blend2d/support/math_p.h>
 #include <blend2d/support/memops_p.h>
 
 namespace bl {
@@ -570,6 +571,304 @@ BL_API_IMPL BLResult bl_image_scale(BLImageCore* dst, const BLImageCore* src, co
   }
 
   return BL_SUCCESS;
+}
+
+// bl::Image - API - Filter
+// ========================
+
+namespace bl {
+namespace ImageFilter {
+
+// Compute 3 box widths that approximate a Gaussian with the given sigma.
+// Based on the W3C CSS specification for filter: blur().
+// See: https://www.w3.org/TR/SVG11/filters.html#feGaussianBlurElement
+static void gaussian_box_widths(double sigma, int widths[3]) noexcept {
+  if (sigma <= 0.0) {
+    widths[0] = widths[1] = widths[2] = 1;
+    return;
+  }
+
+  double ideal = Math::sqrt(12.0 * sigma * sigma / 3.0 + 1.0);
+  int wl = int(ideal);
+  if (wl % 2 == 0) wl--;
+  int wu = wl + 2;
+
+  double m_ideal = (12.0 * sigma * sigma - double(wl) * double(wl) * 3.0 - 4.0 * double(wl) - 3.0) / (-4.0 * double(wl) - 4.0);
+  int m = int(m_ideal + 0.5);
+
+  widths[0] = (0 < m) ? wl : wu;
+  widths[1] = (1 < m) ? wl : wu;
+  widths[2] = (2 < m) ? wl : wu;
+}
+
+// Single-pass horizontal box blur for PRGB32 (4 bytes per pixel).
+// Uses sliding window accumulator — O(width) regardless of radius.
+static void box_blur_horz_prgb32(
+    uint8_t* BL_RESTRICT dst_line, intptr_t dst_stride,
+    const uint8_t* BL_RESTRICT src_line, intptr_t src_stride,
+    int w, int h, int radius) noexcept {
+
+  int kernel = radius * 2 + 1;
+  uint32_t reciprocal = (1u << 24) / uint32_t(kernel);
+
+  for (int y = 0; y < h; y++) {
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(src_line);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(dst_line);
+
+    // Initialize accumulator with clamped left edge.
+    uint32_t acc_r = 0, acc_g = 0, acc_b = 0, acc_a = 0;
+    for (int i = -radius; i <= radius; i++) {
+      int xi = bl_clamp(i, 0, w - 1);
+      uint32_t p = src[xi];
+      acc_b += (p >>  0) & 0xFF;
+      acc_g += (p >>  8) & 0xFF;
+      acc_r += (p >> 16) & 0xFF;
+      acc_a += (p >> 24) & 0xFF;
+    }
+
+    for (int x = 0; x < w; x++) {
+      // Write output pixel.
+      dst[x] = ((acc_b * reciprocal) >> 24)       |
+               (((acc_g * reciprocal) >> 24) << 8) |
+               (((acc_r * reciprocal) >> 24) << 16)|
+               (((acc_a * reciprocal) >> 24) << 24);
+
+      // Slide window: add entering pixel, subtract leaving pixel.
+      int xi_add = bl_min(x + radius + 1, w - 1);
+      int xi_sub = bl_max(x - radius, 0);
+
+      uint32_t p_add = src[xi_add];
+      uint32_t p_sub = src[xi_sub];
+
+      acc_b += ((p_add >>  0) & 0xFF) - ((p_sub >>  0) & 0xFF);
+      acc_g += ((p_add >>  8) & 0xFF) - ((p_sub >>  8) & 0xFF);
+      acc_r += ((p_add >> 16) & 0xFF) - ((p_sub >> 16) & 0xFF);
+      acc_a += ((p_add >> 24) & 0xFF) - ((p_sub >> 24) & 0xFF);
+    }
+
+    src_line += src_stride;
+    dst_line += dst_stride;
+  }
+}
+
+// Single-pass vertical box blur for PRGB32.
+static void box_blur_vert_prgb32(
+    uint8_t* BL_RESTRICT dst_line, intptr_t dst_stride,
+    const uint8_t* BL_RESTRICT src_line, intptr_t src_stride,
+    int w, int h, int radius) noexcept {
+
+  int kernel = radius * 2 + 1;
+  uint32_t reciprocal = (1u << 24) / uint32_t(kernel);
+
+  for (int x = 0; x < w; x++) {
+    const uint8_t* src_col = src_line + x * 4;
+
+    // Initialize accumulator with clamped top edge.
+    uint32_t acc_r = 0, acc_g = 0, acc_b = 0, acc_a = 0;
+    for (int i = -radius; i <= radius; i++) {
+      int yi = bl_clamp(i, 0, h - 1);
+      uint32_t p = *reinterpret_cast<const uint32_t*>(src_col + yi * src_stride);
+      acc_b += (p >>  0) & 0xFF;
+      acc_g += (p >>  8) & 0xFF;
+      acc_r += (p >> 16) & 0xFF;
+      acc_a += (p >> 24) & 0xFF;
+    }
+
+    uint8_t* dst_col = dst_line + x * 4;
+    for (int y = 0; y < h; y++) {
+      uint32_t* dst = reinterpret_cast<uint32_t*>(dst_col + y * dst_stride);
+      *dst = ((acc_b * reciprocal) >> 24)       |
+             (((acc_g * reciprocal) >> 24) << 8) |
+             (((acc_r * reciprocal) >> 24) << 16)|
+             (((acc_a * reciprocal) >> 24) << 24);
+
+      int yi_add = bl_min(y + radius + 1, h - 1);
+      int yi_sub = bl_max(y - radius, 0);
+
+      uint32_t p_add = *reinterpret_cast<const uint32_t*>(src_col + yi_add * src_stride);
+      uint32_t p_sub = *reinterpret_cast<const uint32_t*>(src_col + yi_sub * src_stride);
+
+      acc_b += ((p_add >>  0) & 0xFF) - ((p_sub >>  0) & 0xFF);
+      acc_g += ((p_add >>  8) & 0xFF) - ((p_sub >>  8) & 0xFF);
+      acc_r += ((p_add >> 16) & 0xFF) - ((p_sub >> 16) & 0xFF);
+      acc_a += ((p_add >> 24) & 0xFF) - ((p_sub >> 24) & 0xFF);
+    }
+  }
+}
+
+// Single-pass horizontal box blur for A8 (1 byte per pixel).
+static void box_blur_horz_a8(
+    uint8_t* BL_RESTRICT dst_line, intptr_t dst_stride,
+    const uint8_t* BL_RESTRICT src_line, intptr_t src_stride,
+    int w, int h, int radius) noexcept {
+
+  int kernel = radius * 2 + 1;
+  uint32_t reciprocal = (1u << 24) / uint32_t(kernel);
+
+  for (int y = 0; y < h; y++) {
+    const uint8_t* src = src_line;
+    uint8_t* dst = dst_line;
+
+    uint32_t acc = 0;
+    for (int i = -radius; i <= radius; i++) {
+      acc += src[bl_clamp(i, 0, w - 1)];
+    }
+
+    for (int x = 0; x < w; x++) {
+      dst[x] = uint8_t((acc * reciprocal) >> 24);
+
+      int xi_add = bl_min(x + radius + 1, w - 1);
+      int xi_sub = bl_max(x - radius, 0);
+      acc += src[xi_add] - src[xi_sub];
+    }
+
+    src_line += src_stride;
+    dst_line += dst_stride;
+  }
+}
+
+// Single-pass vertical box blur for A8.
+static void box_blur_vert_a8(
+    uint8_t* BL_RESTRICT dst_line, intptr_t dst_stride,
+    const uint8_t* BL_RESTRICT src_line, intptr_t src_stride,
+    int w, int h, int radius) noexcept {
+
+  int kernel = radius * 2 + 1;
+  uint32_t reciprocal = (1u << 24) / uint32_t(kernel);
+
+  for (int x = 0; x < w; x++) {
+    uint32_t acc = 0;
+    for (int i = -radius; i <= radius; i++) {
+      int yi = bl_clamp(i, 0, h - 1);
+      acc += src_line[yi * src_stride + x];
+    }
+
+    for (int y = 0; y < h; y++) {
+      dst_line[y * dst_stride + x] = uint8_t((acc * reciprocal) >> 24);
+
+      int yi_add = bl_min(y + radius + 1, h - 1);
+      int yi_sub = bl_max(y - radius, 0);
+      acc += src_line[yi_add * src_stride + x] - src_line[yi_sub * src_stride + x];
+    }
+  }
+}
+
+// Apply one pass of box blur (horizontal then vertical) to an image.
+static BLResult box_blur_pass(BLImage& dst, const BLImage& src, int radius) noexcept {
+  BLImageData src_data;
+  BL_PROPAGATE(src.get_data(&src_data));
+
+  int w = src_data.size.w;
+  int h = src_data.size.h;
+  uint32_t format = src_data.format;
+
+  if (radius <= 0 || w <= 0 || h <= 0) {
+    if (&dst != &src)
+      return bl_image_assign_deep(static_cast<BLImageCore*>(&dst), static_cast<const BLImageCore*>(&src));
+    return BL_SUCCESS;
+  }
+
+  // Temporary image for the intermediate horizontal pass result.
+  BLImage tmp(w, h, BLFormat(format));
+  BLImageData tmp_data;
+  BL_PROPAGATE(tmp.make_mutable(&tmp_data));
+
+  const uint8_t* src_pixels = static_cast<const uint8_t*>(src_data.pixel_data);
+  uint8_t* tmp_pixels = static_cast<uint8_t*>(tmp_data.pixel_data);
+
+  // Horizontal pass: src → tmp
+  if (format == BL_FORMAT_PRGB32 || format == BL_FORMAT_XRGB32) {
+    box_blur_horz_prgb32(tmp_pixels, tmp_data.stride, src_pixels, src_data.stride, w, h, radius);
+  }
+  else if (format == BL_FORMAT_A8) {
+    box_blur_horz_a8(tmp_pixels, tmp_data.stride, src_pixels, src_data.stride, w, h, radius);
+  }
+  else {
+    return bl_make_error(BL_ERROR_INVALID_VALUE);
+  }
+
+  // Vertical pass: tmp → dst
+  BL_PROPAGATE(bl_image_create(static_cast<BLImageCore*>(&dst), w, h, BLFormat(format)));
+  BLImageData dst_data;
+  BL_PROPAGATE(dst.make_mutable(&dst_data));
+  uint8_t* dst_pixels = static_cast<uint8_t*>(dst_data.pixel_data);
+
+  if (format == BL_FORMAT_PRGB32 || format == BL_FORMAT_XRGB32) {
+    box_blur_vert_prgb32(dst_pixels, dst_data.stride, tmp_pixels, tmp_data.stride, w, h, radius);
+  }
+  else {
+    box_blur_vert_a8(dst_pixels, dst_data.stride, tmp_pixels, tmp_data.stride, w, h, radius);
+  }
+
+  return BL_SUCCESS;
+}
+
+} // {ImageFilter}
+} // {bl}
+
+BL_API_IMPL BLResult bl_image_filter(BLImageCore* dst, const BLImageCore* src, BLImageFilterType type, double radius) noexcept {
+  using namespace bl::ImageInternal;
+
+  BL_ASSERT(dst->_d.is_image());
+  BL_ASSERT(src->_d.is_image());
+
+  BLImagePrivateImpl* src_impl = get_impl(src);
+  if (src_impl->format == BL_FORMAT_NONE)
+    return bl_image_reset(dst);
+
+  if (radius <= 0.0 || type == BL_IMAGE_FILTER_TYPE_NONE) {
+    if (dst != src)
+      return bl_image_assign_deep(dst, src);
+    return BL_SUCCESS;
+  }
+
+  if (type > BL_IMAGE_FILTER_TYPE_MAX_VALUE)
+    return bl_make_error(BL_ERROR_INVALID_VALUE);
+
+  // Make a deep copy of source if dst == src (we need the original pixels during processing).
+  BLImage src_copy;
+  const BLImageCore* actual_src = src;
+  if (dst == src) {
+    src_copy = src->dcast();
+    actual_src = static_cast<const BLImageCore*>(&src_copy);
+  }
+
+  if (type == BL_IMAGE_FILTER_TYPE_BOX_BLUR) {
+    int r = int(radius + 0.5);
+    if (r < 1) r = 1;
+    return bl::ImageFilter::box_blur_pass(dst->dcast(), actual_src->dcast(), r);
+  }
+
+  if (type == BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR) {
+    // Gaussian blur approximated via 3-pass box blur (W3C CSS standard approach).
+    double sigma = radius / 3.0;
+    int widths[3];
+    bl::ImageFilter::gaussian_box_widths(sigma, widths);
+
+    // Pass 1: src → dst
+    int r1 = widths[0] / 2;
+    BL_PROPAGATE(bl::ImageFilter::box_blur_pass(dst->dcast(), actual_src->dcast(), r1));
+
+    // Pass 2: dst → dst (in-place via temp)
+    int r2 = widths[1] / 2;
+    if (r2 > 0) {
+      BLImage pass2_src;
+      pass2_src = dst->dcast();
+      BL_PROPAGATE(bl::ImageFilter::box_blur_pass(dst->dcast(), pass2_src, r2));
+    }
+
+    // Pass 3: dst → dst (in-place via temp)
+    int r3 = widths[2] / 2;
+    if (r3 > 0) {
+      BLImage pass3_src;
+      pass3_src = dst->dcast();
+      BL_PROPAGATE(bl::ImageFilter::box_blur_pass(dst->dcast(), pass3_src, r3));
+    }
+
+    return BL_SUCCESS;
+  }
+
+  return bl_make_error(BL_ERROR_INVALID_VALUE);
 }
 
 // bl::Image - API - Read File

@@ -695,6 +695,243 @@ static void test_triangle_clip_circle() {
   save_image(img, "test_15_triangle_clip_circle.png");
 }
 
+// ----- Test 16: Box Blur -----
+static void test_box_blur() {
+  printf("\nTest 16: Box Blur\n");
+
+  // Create a test image: white circle on black background
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_all(BLRgba32(0xFF000000));
+    BLPath circle;
+    circle.add_circle(BLCircle(128, 128, 60));
+    ctx.fill_path(circle, BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+  save_image(src, "test_16a_blur_source.png");
+
+  // Apply box blur with radius 5
+  BLImage blurred;
+  BLResult result = BLImage::filter(blurred, src, BL_IMAGE_FILTER_TYPE_BOX_BLUR, 5.0);
+  if (result != BL_SUCCESS) {
+    printf("  FAIL: BLImage::filter returned error %u\n", unsigned(result));
+    g_failures++;
+    return;
+  }
+
+  save_image(blurred, "test_16b_box_blur_r5.png");
+
+  // Verify blur properties:
+  // 1. Center of circle should still be bright (near white)
+  uint32_t center = get_pixel(blurred, 128, 128);
+  if (pixel_r(center) > 200) {
+    printf("  PASS: Blur center still bright (R=%u)\n", unsigned(pixel_r(center)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Blur center too dark (R=%u, expected >200)\n", unsigned(pixel_r(center)));
+    g_failures++;
+  }
+
+  // 2. Far corner should still be dark (near black)
+  uint32_t corner = get_pixel(blurred, 10, 10);
+  if (pixel_r(corner) < 10) {
+    printf("  PASS: Blur corner still dark (R=%u)\n", unsigned(pixel_r(corner)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Blur corner too bright (R=%u, expected <10)\n", unsigned(pixel_r(corner)));
+    g_failures++;
+  }
+
+  // 3. Edge of circle should be blurred (intermediate value, not sharp 0/255)
+  uint32_t edge = get_pixel(blurred, 128 + 60, 128);  // Right edge of original circle
+  uint8_t edge_r = pixel_r(edge);
+  if (edge_r > 20 && edge_r < 235) {
+    printf("  PASS: Blur edge has intermediate value (R=%u)\n", unsigned(edge_r));
+    g_passes++;
+  } else {
+    printf("  FAIL: Blur edge not blurred (R=%u, expected 20-235)\n", unsigned(edge_r));
+    g_failures++;
+  }
+
+  // 4. Image dimensions should be preserved
+  if (blurred.width() == 256 && blurred.height() == 256) {
+    printf("  PASS: Blur preserves dimensions (%dx%d)\n", blurred.width(), blurred.height());
+    g_passes++;
+  } else {
+    printf("  FAIL: Blur changed dimensions to %dx%d\n", blurred.width(), blurred.height());
+    g_failures++;
+  }
+}
+
+// ----- Test 17: Gaussian Blur -----
+static void test_gaussian_blur() {
+  printf("\nTest 17: Gaussian Blur\n");
+
+  // Create test image: red and blue halves
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_rect(BLRect(0, 0, 128, 256), BLRgba32(0xFFFF0000));
+    ctx.fill_rect(BLRect(128, 0, 128, 256), BLRgba32(0xFF0000FF));
+    ctx.end();
+  }
+  save_image(src, "test_17a_gaussian_source.png");
+
+  // Apply Gaussian blur with radius 10
+  BLImage blurred;
+  BLResult result = BLImage::filter(blurred, src, BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR, 10.0);
+  if (result != BL_SUCCESS) {
+    printf("  FAIL: Gaussian blur returned error %u\n", unsigned(result));
+    g_failures++;
+    return;
+  }
+
+  save_image(blurred, "test_17b_gaussian_blur_r10.png");
+
+  // Apply stronger Gaussian blur
+  BLImage blurred_strong;
+  BLImage::filter(blurred_strong, src, BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR, 30.0);
+  save_image(blurred_strong, "test_17c_gaussian_blur_r30.png");
+
+  // Verify:
+  // 1. Far left should still be mostly red
+  uint32_t left = get_pixel(blurred, 30, 128);
+  if (pixel_r(left) > 200 && pixel_b(left) < 50) {
+    printf("  PASS: Left side still red (R=%u, B=%u)\n", unsigned(pixel_r(left)), unsigned(pixel_b(left)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Left side not red enough (R=%u, B=%u)\n", unsigned(pixel_r(left)), unsigned(pixel_b(left)));
+    g_failures++;
+  }
+
+  // 2. Far right should still be mostly blue
+  uint32_t right = get_pixel(blurred, 225, 128);
+  if (pixel_b(right) > 200 && pixel_r(right) < 50) {
+    printf("  PASS: Right side still blue (R=%u, B=%u)\n", unsigned(pixel_r(right)), unsigned(pixel_b(right)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Right side not blue enough (R=%u, B=%u)\n", unsigned(pixel_r(right)), unsigned(pixel_b(right)));
+    g_failures++;
+  }
+
+  // 3. Center boundary should be blended (both R and B present)
+  uint32_t mid = get_pixel(blurred, 128, 128);
+  if (pixel_r(mid) > 50 && pixel_b(mid) > 50) {
+    printf("  PASS: Center boundary blended (R=%u, B=%u)\n", unsigned(pixel_r(mid)), unsigned(pixel_b(mid)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Center boundary not blended (R=%u, B=%u)\n", unsigned(pixel_r(mid)), unsigned(pixel_b(mid)));
+    g_failures++;
+  }
+
+  // 4. Stronger blur should blend more at center
+  uint32_t mid_strong = get_pixel(blurred_strong, 128, 128);
+  // With r=30, the center should be very well mixed
+  int r_diff = abs(int(pixel_r(mid_strong)) - int(pixel_b(mid_strong)));
+  if (r_diff < 30) {
+    printf("  PASS: Strong blur: center well-mixed (R=%u, B=%u, diff=%d)\n",
+           unsigned(pixel_r(mid_strong)), unsigned(pixel_b(mid_strong)), r_diff);
+    g_passes++;
+  } else {
+    printf("  FAIL: Strong blur: center not mixed enough (R=%u, B=%u, diff=%d)\n",
+           unsigned(pixel_r(mid_strong)), unsigned(pixel_b(mid_strong)), r_diff);
+    g_failures++;
+  }
+}
+
+// ----- Test 18: Blur Edge Cases -----
+static void test_blur_edge_cases() {
+  printf("\nTest 18: Blur Edge Cases\n");
+
+  // Zero radius should produce identical output
+  BLImage src(64, 64, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_all(BLRgba32(0xFFAABBCC));
+    ctx.end();
+  }
+
+  BLImage zero_blur;
+  BLImage::filter(zero_blur, src, BL_IMAGE_FILTER_TYPE_GAUSSIAN_BLUR, 0.0);
+  check_pixel_near(zero_blur, 32, 32, 0xFFAABBCC, 0, "Zero-radius blur preserves pixels");
+
+  // Solid color blur should produce the same solid color
+  BLImage solid_blur;
+  BLImage::filter(solid_blur, src, BL_IMAGE_FILTER_TYPE_BOX_BLUR, 10.0);
+  // Tolerance of 3 accounts for fixed-point reciprocal truncation in the sliding window accumulator.
+  check_pixel_near(solid_blur, 32, 32, 0xFFAABBCC, 3, "Blur of solid color = same color");
+  check_pixel_near(solid_blur, 0, 0, 0xFFAABBCC, 3, "Blur solid: corner unchanged");
+  check_pixel_near(solid_blur, 63, 63, 0xFFAABBCC, 3, "Blur solid: opposite corner");
+
+  // A8 format blur
+  BLImage a8_src(64, 64, BL_FORMAT_A8);
+  {
+    BLContext ctx(a8_src);
+    ctx.clear_all();
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_rect(BLRect(16, 16, 32, 32), BLRgba32(0xFF000000));
+    ctx.end();
+  }
+
+  BLImage a8_blur;
+  BLResult r = BLImage::filter(a8_blur, a8_src, BL_IMAGE_FILTER_TYPE_BOX_BLUR, 3.0);
+  if (r == BL_SUCCESS) {
+    BLImageData data;
+    a8_blur.get_data(&data);
+    const uint8_t* px = static_cast<const uint8_t*>(data.pixel_data);
+
+    uint8_t center = px[32 * data.stride + 32];
+    uint8_t corner = px[2 * data.stride + 2];
+
+    if (center > 200) {
+      printf("  PASS: A8 blur center alpha = %u\n", unsigned(center));
+      g_passes++;
+    } else {
+      printf("  FAIL: A8 blur center alpha = %u, expected >200\n", unsigned(center));
+      g_failures++;
+    }
+
+    if (corner < 20) {
+      printf("  PASS: A8 blur corner alpha = %u\n", unsigned(corner));
+      g_passes++;
+    } else {
+      printf("  FAIL: A8 blur corner alpha = %u, expected <20\n", unsigned(corner));
+      g_failures++;
+    }
+
+    save_image(a8_blur, "test_18_a8_blur.png");
+  } else {
+    printf("  FAIL: A8 blur returned error %u\n", unsigned(r));
+    g_failures++;
+  }
+
+  // In-place blur (dst == src)
+  BLImage inplace(64, 64, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(inplace);
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_all(BLRgba32(0xFF000000));
+    ctx.fill_rect(BLRect(20, 20, 24, 24), BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+  BLImage::filter(inplace, inplace, BL_IMAGE_FILTER_TYPE_BOX_BLUR, 5.0);
+  uint32_t ip_center = get_pixel(inplace, 32, 32);
+  uint32_t ip_corner = get_pixel(inplace, 5, 5);
+  if (pixel_r(ip_center) > pixel_r(ip_corner)) {
+    printf("  PASS: In-place blur works (center=%u > corner=%u)\n",
+           unsigned(pixel_r(ip_center)), unsigned(pixel_r(ip_corner)));
+    g_passes++;
+  } else {
+    printf("  FAIL: In-place blur broken (center=%u, corner=%u)\n",
+           unsigned(pixel_r(ip_center)), unsigned(pixel_r(ip_corner)));
+    g_failures++;
+  }
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -718,6 +955,9 @@ int main(int argc, char* argv[]) {
   test_clipping_with_transform();
   test_overlapping_fills();
   test_triangle_clip_circle();
+  test_box_blur();
+  test_gaussian_blur();
+  test_blur_edge_cases();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
