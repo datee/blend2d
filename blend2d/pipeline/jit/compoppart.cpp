@@ -364,8 +364,50 @@ void CompOpPart::src_fetch(Pixel& p, PixelCount n, PixelFlags flags, PixelPredic
       }
     }
     else if (p.isA8()) {
-      // TODO: [JIT] UNIMPLEMENTED: A8 pipepine.
-      BL_ASSERT(false);
+      VecWidth pa_vec_width = pc->vec_width_of(DataWidth::k8, n);
+      VecWidth ua_vec_width = pc->vec_width_of(DataWidth::k16, n);
+
+      size_t pa_count = pc->vec_count_of(DataWidth::k8, n);
+      size_t ua_count = pc->vec_count_of(DataWidth::k16, n);
+
+      if (bl_test_flag(flags, PixelFlags::kImmutable)) {
+        if (bl_test_flag(flags, PixelFlags::kPA)) {
+          p.pa.init(VecWidthUtils::clone_vec_as(s.pa[0], pa_vec_width));
+        }
+
+        if (bl_test_flag(flags, PixelFlags::kPI)) {
+          p.pi.init(VecWidthUtils::clone_vec_as(s.pi[0], pa_vec_width));
+        }
+
+        if (bl_test_flag(flags, PixelFlags::kUA)) {
+          p.ua.init(VecWidthUtils::clone_vec_as(s.ua[0], ua_vec_width));
+        }
+
+        if (bl_test_flag(flags, PixelFlags::kUI)) {
+          p.ui.init(VecWidthUtils::clone_vec_as(s.ui[0], ua_vec_width));
+        }
+      }
+      else {
+        if (bl_test_flag(flags, PixelFlags::kPA)) {
+          pc->new_vec_array(p.pa, pa_count, pa_vec_width, p.name(), "pa");
+          pc->v_mov(p.pa, VecWidthUtils::clone_vec_as(s.pa[0], pa_vec_width));
+        }
+
+        if (bl_test_flag(flags, PixelFlags::kPI)) {
+          pc->new_vec_array(p.pi, pa_count, pa_vec_width, p.name(), "pi");
+          pc->v_mov(p.pi, VecWidthUtils::clone_vec_as(s.pi[0], pa_vec_width));
+        }
+
+        if (bl_test_flag(flags, PixelFlags::kUA)) {
+          pc->new_vec_array(p.ua, ua_count, ua_vec_width, p.name(), "ua");
+          pc->v_mov(p.ua, VecWidthUtils::clone_vec_as(s.ua[0], ua_vec_width));
+        }
+
+        if (bl_test_flag(flags, PixelFlags::kUI)) {
+          pc->new_vec_array(p.ui, ua_count, ua_vec_width, p.name(), "ui");
+          pc->v_mov(p.ui, VecWidthUtils::clone_vec_as(s.ui[0], ua_vec_width));
+        }
+      }
     }
 
     return;

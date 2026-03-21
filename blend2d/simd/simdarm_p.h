@@ -526,7 +526,9 @@ template<> BL_INLINE_NODEBUG uint8x16_t simd_make_zero_w<16>() noexcept { return
 template<> BL_INLINE_NODEBUG uint8x8_t simd_make_ones_w<8>() noexcept { return simd_u8(vdup_n_s32(-1)); }
 template<> BL_INLINE_NODEBUG uint8x16_t simd_make_ones_w<16>() noexcept { return simd_u8(vdupq_n_s32(-1)); }
 
-// TODO: It seems that ARM has no such feature. So return something instead of returning uninitialized value.
+// ARM NEON has no "undefined value" intrinsic (unlike x86 _mm_undefined_si128). Returning zero is the safe
+// default — it avoids undefined behavior and the zero-register is free on AArch64 (WZR/XZR). The compiler
+// can optimize away the zeroing if the result is immediately overwritten.
 template<> BL_INLINE_NODEBUG uint8x8_t simd_make_undefined_w<8>() noexcept { return simd_u8(vdup_n_u32(0)); }
 template<> BL_INLINE_NODEBUG uint8x16_t simd_make_undefined_w<16>() noexcept { return simd_u8(vdupq_n_u32(0)); }
 
@@ -1291,6 +1293,12 @@ BL_INLINE_NODEBUG int64x2_t simd_movw_i32_i64(const int32x4_t& a) noexcept { ret
 BL_INLINE_NODEBUG uint64x2_t simd_movw_u32_u64(const uint32x4_t& a) noexcept { return simd_unpack_lo64_u32_u64(a); }
 BL_INLINE_NODEBUG int32x4_t simd_movw_i8_i32(const int8x16_t& a) noexcept { return simd_unpack_lo32_i8_i32(a); }
 BL_INLINE_NODEBUG uint32x4_t simd_movw_u8_u32(const uint8x16_t& a) noexcept { return simd_unpack_lo32_u8_u32(a); }
+
+// Double-width extensions (two-stage): i8/u8→i64/u64 and i16/u16→i64/u64.
+BL_INLINE_NODEBUG int64x2_t simd_movw_i8_i64(const int8x16_t& a) noexcept { return simd_unpack_lo64_i32_i64(simd_unpack_lo32_i8_i32(a)); }
+BL_INLINE_NODEBUG uint64x2_t simd_movw_u8_u64(const uint8x16_t& a) noexcept { return simd_unpack_lo64_u32_u64(simd_unpack_lo32_u8_u32(a)); }
+BL_INLINE_NODEBUG int64x2_t simd_movw_i16_i64(const int16x8_t& a) noexcept { return simd_unpack_lo64_i32_i64(simd_unpack_lo64_i16_i32(a)); }
+BL_INLINE_NODEBUG uint64x2_t simd_movw_u16_u64(const uint16x8_t& a) noexcept { return simd_unpack_lo64_u32_u64(simd_unpack_lo64_u16_u32(a)); }
 
 } // {Internal}
 
@@ -2290,8 +2298,6 @@ template<typename V> BL_INLINE_NODEBUG V unpack_hi64_u16_u32(const V& a) noexcep
 template<typename V> BL_INLINE_NODEBUG V unpack_hi64_i32_i64(const V& a) noexcept { return from_simd<V>(I::simd_unpack_hi64_i32_i64(simd_i32(a.v))); }
 template<typename V> BL_INLINE_NODEBUG V unpack_hi64_u32_u64(const V& a) noexcept { return from_simd<V>(I::simd_unpack_hi64_u32_u64(simd_u32(a.v))); }
 
-/*
-// TODO:
 template<typename V> BL_INLINE_NODEBUG V movw_i8_i16(const V& a) noexcept { return from_simd<V>(I::simd_movw_i8_i16(a.v)); }
 template<typename V> BL_INLINE_NODEBUG V movw_i8_i32(const V& a) noexcept { return from_simd<V>(I::simd_movw_i8_i32(a.v)); }
 template<typename V> BL_INLINE_NODEBUG V movw_i8_i64(const V& a) noexcept { return from_simd<V>(I::simd_movw_i8_i64(a.v)); }
@@ -2305,7 +2311,6 @@ template<typename V> BL_INLINE_NODEBUG V movw_u8_u64(const V& a) noexcept { retu
 template<typename V> BL_INLINE_NODEBUG V movw_u16_u32(const V& a) noexcept { return from_simd<V>(I::simd_movw_u16_u32(a.v)); }
 template<typename V> BL_INLINE_NODEBUG V movw_u16_u64(const V& a) noexcept { return from_simd<V>(I::simd_movw_u16_u64(a.v)); }
 template<typename V> BL_INLINE_NODEBUG V movw_u32_u64(const V& a) noexcept { return from_simd<V>(I::simd_movw_u32_u64(a.v)); }
-*/
 
 // SIMD - Public - Arithmetic & Logical Operations
 // ===============================================
@@ -2839,8 +2844,7 @@ namespace {
 // SIMD - Public - Workarounds
 // ===========================
 
-// TODO: These need a proper abstraction in Internal namespace.
-
+// Public wrapper for i32→f64 conversion. Internal:: equivalent is simd_cvt_2xi32_f64().
 #if defined(BL_SIMD_AARCH64)
 BL_INLINE_NODEBUG Vec2xF64 cvt_2xi32_f64(const Vec4xI32& a) noexcept {
   return Vec2xF64{vcvtq_f64_s64(I::simd_unpack_lo64_i32_i64(simd_i32(a.v)))};

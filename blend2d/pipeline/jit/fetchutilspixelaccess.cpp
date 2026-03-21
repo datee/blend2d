@@ -550,7 +550,11 @@ static void fetch_predicated_vec8_v128(PipeCompiler* pc, const VecArray& d_vec, 
   else {
     BL_ASSERT(vec_count > 1);
 
-    // TODO: [JIT] UNIMPLEMENTED: Predicated fetch - multiple vector registers.
+    // TODO: [JIT] UNIMPLEMENTED: Predicated fetch for n > 16 with multiple 128-bit vector registers.
+    // Implementation approach: load full 128-bit vectors for the first (vec_count - 1) registers, then
+    // use fetch_predicated_vec8_1to15() for the last partial vector. Requires branching on count to
+    // determine how many full vectors can be loaded. See fetch_predicated_vec8_avx() for the AVX
+    // equivalent that handles multi-vector cases with hardware mask support.
     bl_unused(vec_count);
     BL_NOT_REACHED();
   }
@@ -840,7 +844,9 @@ static void fetch_predicated_vec32_v128(PipeCompiler* pc, const VecArray& d_vec,
   pc->add_ext(adjusted2, s_ptr, count.clone_as(s_ptr), 4, -4);
 
   if (vec_count > 1u) {
-    // TODO: [JIT] UNIMPLEMENTED: Not expected to have more than 2 - 2 vectors would be unpacked to 4, which is the limit.
+    // NOTE: Currently limited to vec_count == 2 because 2 packed vectors unpack to 4 unpacked vectors,
+    // which is the VecArray maximum. Extending beyond 2 would require either a larger VecArray or a
+    // multi-pass approach. In practice, 2 vectors (8 u32 pixels) is sufficient for 128-bit SIMD paths.
     BL_ASSERT(vec_count == 2);
 
     L_Done = pc->new_label();
@@ -3014,15 +3020,34 @@ static void satisfy_pixels_a8(PipeCompiler* pc, Pixel& p, PixelFlags flags) noex
       pc->v_not_u32(p.pi, p.pa);
     }
     else {
-      // TODO: [JIT] UNIMPLEMENTED: A8 pipeline - finalize satisfy-pixel.
-      BL_ASSERT(false);
+      // PA is empty but UA should be available — pack UA→PA first, then invert.
+      BL_ASSERT(!p.ua.is_empty());
+      _x_pack_pixel(pc, p.pa, p.ua, uint32_t(p.count()), p.name(), "pa");
+      pc->new_vec_array(p.pi, p.pa.size(), p.pa[0], p.name(), "pi");
+      pc->v_not_u32(p.pi, p.pa);
     }
   }
 
   if (bl_test_flag(flags, PixelFlags::kUA | PixelFlags::kUI)) {
     if (p.ua.is_empty()) {
-      // TODO: [JIT] UNIMPLEMENTED: A8 pipeline - finalize satisfy-pixel.
-      BL_ASSERT(false);
+      // UA is needed but only PA is available — unpack PA→UA.
+      BL_ASSERT(!p.pa.is_empty());
+      _x_unpack_pixel(pc, p.ua, p.pa, uint32_t(p.count()), p.name(), "ua");
+    }
+
+    if (bl_test_flag(flags, PixelFlags::kUI) && p.ui.is_empty()) {
+      BL_ASSERT(!p.ua.is_empty());
+
+      if (pc->has_non_destructive_src() || bl_test_flag(flags, PixelFlags::kUA)) {
+        pc->new_vec_array(p.ui, p.ua.size(), p.ua[0], p.name(), "ui");
+        pc->v_inv255_u16(p.ui, p.ua);
+      }
+      else {
+        p.ui.init(p.ua);
+        pc->v_inv255_u16(p.ui, p.ua);
+        p.ua.reset();
+        pc->rename(p.ui, p.name(), "ui");
+      }
     }
   }
 }
@@ -3236,7 +3261,24 @@ static void satisfy_solid_pixels_a8(PipeCompiler* pc, Pixel& p, PixelFlags flags
     }
   }
 
-  // TODO: [JIT] UNIMPLEMENTED: A8 pipeline - finalize solid-alpha.
+  if (bl_test_flag(flags, PixelFlags::kUA) && p.ua.is_empty()) {
+    BL_ASSERT(!p.pa.is_empty());
+    pc->new_vec_array(p.ua, 1, vw, p.name(), "ua");
+    pc->v_cvt_u8_lo_to_u16(p.ua[0], p.pa[0]);
+  }
+
+  if (bl_test_flag(flags, PixelFlags::kUI) && p.ui.is_empty()) {
+    pc->new_vec_array(p.ui, 1, vw, p.name(), "ui");
+
+    if (!p.ua.is_empty()) {
+      pc->v_inv255_u16(p.ui[0], p.ua[0]);
+    }
+    else {
+      BL_ASSERT(!p.pa.is_empty());
+      pc->v_cvt_u8_lo_to_u16(p.ui[0], p.pa[0]);
+      pc->v_inv255_u16(p.ui[0], p.ui[0]);
+    }
+  }
 }
 
 static void satisfy_solid_pixels_rgba32(PipeCompiler* pc, Pixel& p, PixelFlags flags) noexcept {
@@ -3654,7 +3696,10 @@ void store_pixels_and_advance(PipeCompiler* pc, const Gp& d_ptr, Pixel& p, Pixel
           else {
             satisfy_pixels(pc, p, PixelFlags::kPA | PixelFlags::kImmutable);
 
-            // TODO: [JIT] OPTIMIZATION: AArch64 - Use v_storeavec with multiple Vec registers to take advantage of STP where possible.
+            // TODO: [JIT] OPTIMIZATION: AArch64 - When p.pa.size() >= 2, use STP (Store Pair) instruction
+            // to store two consecutive vector registers in a single operation. Pattern: iterate in pairs,
+            // emit cc->stp(p.pa[i], p.pa[i+1], a64::ptr(d_ptr, offset)), handle odd remainder with
+            // single v_storeavec(). See store_vec8_aarch64() for existing STP usage pattern.
             uint32_t pc_index = 0;
             uint32_t vec_size = p.pa[0].size();
             uint32_t pixels_per_reg = vec_size;
@@ -3701,7 +3746,9 @@ void store_pixels_and_advance(PipeCompiler* pc, const Gp& d_ptr, Pixel& p, Pixel
           pc->v_store_iany(d_mem, p.pc[0], uint32_t(n) * 4u, alignment);
         }
         else {
-          // TODO: [JIT] OPTIMIZATION: AArch64 - Use v_storeavec with multiple Vec registers to take advantage of STP where possible.
+          // TODO: [JIT] OPTIMIZATION: AArch64 - When p.pc.size() >= 2, use STP (Store Pair) instruction
+          // to store two consecutive vector registers in a single operation. Same pattern as the A8 path
+          // above. See store_vec8_aarch64() for existing STP usage.
           uint32_t pc_index = 0;
           uint32_t vec_size = p.pc[0].size();
           uint32_t pixels_per_reg = vec_size / 4u;

@@ -1331,14 +1331,11 @@ BL_INLINE_NODEBUG __m128 simd_cvt_i32_f32(const __m128i& a) noexcept { return _m
 BL_INLINE_NODEBUG __m128i simd_cvt_f32_i32(const __m128& a) noexcept { return _mm_cvtps_epi32(a); }
 BL_INLINE_NODEBUG __m128i simd_cvtt_f32_i32(const __m128& a) noexcept { return _mm_cvttps_epi32(a); }
 
-/*
-// TODO: SIMD WRAP
 BL_INLINE_NODEBUG __m128i simd_cvt_f64_i32(const __m128d& a) noexcept { return _mm_cvtpd_epi32(a); }
 BL_INLINE_NODEBUG __m128i simd_cvtt_f64_i32(const __m128d& a) noexcept { return _mm_cvttpd_epi32(a); }
 BL_INLINE_NODEBUG __m128 simd_cvt_f64_f32(const __m128d& a) noexcept { return _mm_cvtpd_ps(a); }
 BL_INLINE_NODEBUG __m128d simd_cvt_2xi32_f64(const __m128i& a) noexcept { return _mm_cvtepi32_pd(a); }
 BL_INLINE_NODEBUG __m128d simd_cvt_f32x2_f64(const __m128& a) noexcept { return _mm_cvtps_pd(a); }
-*/
 
 #if defined(BL_TARGET_OPT_AVX2)
 BL_INLINE_NODEBUG __m256 simd_cvt_i32_f32(const __m256i& a) noexcept { return _mm256_cvtepi32_ps(a); }
@@ -5500,8 +5497,7 @@ namespace {
 // SIMD - Public - Workarounds
 // ===========================
 
-// TODO: These need a proper abstraction in Internal namespace.
-
+// Public wrappers for f64↔i32 conversions. Internal:: equivalents are simd_cvt_2xi32_f64() and simd_cvtt_f64_i32().
 BL_INLINE_NODEBUG Vec2xF64 cvt_2xi32_f64(const Vec4xI32& a) noexcept { return Vec2xF64{_mm_cvtepi32_pd(a.v)}; }
 BL_INLINE_NODEBUG Vec4xI32 cvtt_f64_i32(const Vec2xF64& a) noexcept { return Vec4xI32{_mm_cvttpd_epi32(a.v)}; }
 

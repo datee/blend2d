@@ -321,6 +321,7 @@ set(BLEND2D_SRC_LIST
   blend2d/pipeline/jit/fetchutilspixelaccess.cpp
   blend2d/pipeline/jit/fetchutilspixelaccess_p.h
   blend2d/pipeline/jit/fetchutilspixelaccess_test.cpp
+  blend2d/pipeline/jit/fetchutilspixelaccess_a8_test.cpp
   blend2d/pipeline/jit/fetchutilspixelgather.cpp
   blend2d/pipeline/jit/fetchutilspixelgather_p.h
   blend2d/pipeline/jit/fillpart.cpp
@@ -391,6 +392,7 @@ set(BLEND2D_SRC_LIST
   blend2d/simd/simd_p.h
   blend2d/simd/simd_test.cpp
   blend2d/simd/simd_test_p.h
+  blend2d/simd/simd_conversion_test.cpp
   blend2d/simd/simdbase_p.h
   blend2d/simd/simdarm_p.h
   blend2d/simd/simdarm_test_asimd.cpp
