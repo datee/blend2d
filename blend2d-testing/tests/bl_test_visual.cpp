@@ -20,7 +20,6 @@
 #include <string.h>
 #include <math.h>
 
-static bool g_save = false;
 static int g_failures = 0;
 static int g_passes = 0;
 
@@ -61,13 +60,11 @@ static bool check_pixel_near(const BLImage& img, int x, int y, uint32_t expected
 }
 
 static void save_image(const BLImage& img, const char* filename) {
-  if (g_save) {
-    BLResult result = img.write_to_file(filename);
-    if (result == BL_SUCCESS) {
-      printf("  Saved: %s\n", filename);
-    } else {
-      printf("  WARNING: Failed to save %s (error=%u)\n", filename, unsigned(result));
-    }
+  BLResult result = img.write_to_file(filename);
+  if (result == BL_SUCCESS) {
+    printf("  Saved: %s\n", filename);
+  } else {
+    printf("  WARNING: Failed to save %s (error=%u)\n", filename, unsigned(result));
   }
 }
 
@@ -407,21 +404,11 @@ static void test_stroke() {
 
 // ----- Main -----
 int main(int argc, char* argv[]) {
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--save") == 0) {
-      g_save = true;
-    }
-    if (strcmp(argv[i], "--help") == 0) {
-      printf("Usage: bl_test_visual [--save]\n");
-      printf("  --save  Write test PNG files to disk for visual inspection\n");
-      return 0;
-    }
-  }
+  (void)argc;
+  (void)argv;
 
   printf("Blend2D Visual Rendering Tests\n");
   printf("==============================\n");
-  if (g_save)
-    printf("Saving PNG files enabled.\n");
 
   test_basic_fills();
   test_alpha_blending();
