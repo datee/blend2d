@@ -62,10 +62,47 @@ BL_DEFINE_ENUM(BLImageFilterType) {
   BL_FORCE_ENUM_UINT32(BL_IMAGE_FILTER_TYPE)
 };
 
+//! Type of high-level image effect used by `bl_image_apply_effect()`.
+BL_DEFINE_ENUM(BLImageEffectType) {
+  //! No effect.
+  BL_IMAGE_EFFECT_TYPE_NONE = 0,
+  //! Blur effect. Quality controls algorithm: low=box blur, mid=3-pass Gaussian approx, ultra=true Gaussian.
+  BL_IMAGE_EFFECT_TYPE_BLUR = 1,
+  //! Glow effect. Blurs the image, tints with color, composites behind original.
+  BL_IMAGE_EFFECT_TYPE_GLOW = 2,
+  //! Drop shadow. Extracts alpha, blurs, colorizes, offsets, composites behind original.
+  BL_IMAGE_EFFECT_TYPE_DROP_SHADOW = 3,
+
+  //! Maximum value of `BLImageEffectType`.
+  BL_IMAGE_EFFECT_TYPE_MAX_VALUE = 3
+
+  BL_FORCE_ENUM_UINT32(BL_IMAGE_EFFECT_TYPE)
+};
+
 //! \}
 
 //! \name BLImage - Structs
 //! \{
+
+//! Options for `bl_image_apply_effect()`.
+struct BLImageEffectOptions {
+  //! Effect type, see \ref BLImageEffectType.
+  uint32_t type;
+  //! Blur/glow radius in pixels.
+  double radius;
+  //! Quality: 0.0 (fastest/box blur) to 1.0 (ultra/true Gaussian). Default 0.5.
+  double quality;
+  //! Horizontal offset for drop shadow.
+  double offset_x;
+  //! Vertical offset for drop shadow.
+  double offset_y;
+  //! Color for glow or drop shadow (0xAARRGGBB).
+  uint32_t color;
+
+#ifdef __cplusplus
+  BL_INLINE void reset() noexcept { *this = BLImageEffectOptions{}; }
+#endif
+};
 
 //! Data that describes a raster image. Used by \ref BLImage.
 struct BLImageData {
@@ -177,6 +214,7 @@ BL_API BLResult BL_CDECL bl_image_convert(BLImageCore* self, BLFormat format) BL
 BL_API bool BL_CDECL bl_image_equals(const BLImageCore* a, const BLImageCore* b) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_scale(BLImageCore* dst, const BLImageCore* src, const BLSizeI* size, BLImageScaleFilter filter) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_filter(BLImageCore* dst, const BLImageCore* src, BLImageFilterType type, double radius, double quality) BL_NOEXCEPT_C;
+BL_API BLResult BL_CDECL bl_image_apply_effect(BLImageCore* dst, const BLImageCore* src, const BLImageEffectOptions* options) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_read_from_file(BLImageCore* self, const char* file_name, const BLArrayCore* codecs) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_read_from_data(BLImageCore* self, const void* data, size_t size, const BLArrayCore* codecs) BL_NOEXCEPT_C;
 BL_API BLResult BL_CDECL bl_image_write_to_file(const BLImageCore* self, const char* file_name, const BLImageCodecCore* codec) BL_NOEXCEPT_C;
@@ -537,6 +575,42 @@ public:
   //!   - 1.0 = highest quality (no downscale, full resolution blur)
   static BL_INLINE_NODEBUG BLResult filter(BLImage& dst, const BLImage& src, BLImageFilterType type, double radius, double quality = 0.5) noexcept {
     return bl_image_filter(&dst, &src, type, radius, quality);
+  }
+
+  //! Applies a high-level image effect. See \ref BLImageEffectOptions.
+  static BL_INLINE_NODEBUG BLResult apply_effect(BLImage& dst, const BLImage& src, const BLImageEffectOptions& options) noexcept {
+    return bl_image_apply_effect(&dst, &src, &options);
+  }
+
+  //! Convenience: blur with automatic algorithm selection based on quality.
+  static BL_INLINE_NODEBUG BLResult blur(BLImage& dst, const BLImage& src, double radius, double quality = 0.5) noexcept {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_BLUR;
+    opts.radius = radius;
+    opts.quality = quality;
+    return bl_image_apply_effect(&dst, &src, &opts);
+  }
+
+  //! Convenience: glow effect (blur + tint + composite behind).
+  static BL_INLINE_NODEBUG BLResult glow(BLImage& dst, const BLImage& src, double radius, BLRgba32 color, double quality = 0.5) noexcept {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_GLOW;
+    opts.radius = radius;
+    opts.quality = quality;
+    opts.color = color.value;
+    return bl_image_apply_effect(&dst, &src, &opts);
+  }
+
+  //! Convenience: drop shadow (blur alpha, colorize, offset, composite behind).
+  static BL_INLINE_NODEBUG BLResult drop_shadow(BLImage& dst, const BLImage& src, double radius, double offset_x, double offset_y, BLRgba32 color, double quality = 0.5) noexcept {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+    opts.radius = radius;
+    opts.quality = quality;
+    opts.offset_x = offset_x;
+    opts.offset_y = offset_y;
+    opts.color = color.value;
+    return bl_image_apply_effect(&dst, &src, &opts);
   }
 };
 

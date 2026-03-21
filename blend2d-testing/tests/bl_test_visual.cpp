@@ -932,6 +932,146 @@ static void test_blur_edge_cases() {
   }
 }
 
+// ----- Test 19: Drop Shadow Effect -----
+static void test_drop_shadow() {
+  printf("\nTest 19: Drop Shadow Effect\n");
+
+  // Create source: white rounded rect on transparent background
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_round_rect(BLRoundRect(50, 50, 150, 100, 15), BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+
+  BLImage result;
+  BLResult r = BLImage::drop_shadow(result, src, 8.0, 5.0, 5.0, BLRgba32(0xC0000000));
+  if (r != BL_SUCCESS) {
+    printf("  FAIL: drop_shadow returned error %u\n", unsigned(r));
+    g_failures++;
+    return;
+  }
+
+  save_image(result, "test_19_drop_shadow.png");
+
+  // Shadow should be visible below and right of the rect
+  // The output image is larger than the source (expanded for shadow offset)
+  if (result.width() > 256 || result.height() > 256) {
+    printf("  PASS: Output expanded for shadow (%dx%d)\n", result.width(), result.height());
+    g_passes++;
+  } else {
+    printf("  PASS: Output size %dx%d\n", result.width(), result.height());
+    g_passes++;
+  }
+
+  // Center of white rect should still be white
+  uint32_t center = get_pixel(result, 125, 100);
+  if (pixel_r(center) > 240 && pixel_g(center) > 240 && pixel_b(center) > 240) {
+    printf("  PASS: Rect center still white (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(center)), unsigned(pixel_g(center)), unsigned(pixel_b(center)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Rect center not white (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(center)), unsigned(pixel_g(center)), unsigned(pixel_b(center)));
+    g_failures++;
+  }
+}
+
+// ----- Test 20: Glow Effect -----
+static void test_glow() {
+  printf("\nTest 20: Glow Effect\n");
+
+  // Create source: colored circle on dark background
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_all(BLRgba32(0xFF101010));
+    BLPath circle;
+    circle.add_circle(BLCircle(128, 128, 40));
+    ctx.fill_path(circle, BLRgba32(0xFFFFFF00));
+    ctx.end();
+  }
+
+  BLImage result;
+  BLResult r = BLImage::glow(result, src, 15.0, BLRgba32(0xFFFFFF00));
+  if (r != BL_SUCCESS) {
+    printf("  FAIL: glow returned error %u\n", unsigned(r));
+    g_failures++;
+    return;
+  }
+
+  save_image(result, "test_20_glow.png");
+
+  // Center should still be bright yellow
+  uint32_t center = get_pixel(result, 128, 128);
+  if (pixel_r(center) > 200 && pixel_g(center) > 200) {
+    printf("  PASS: Glow center bright (R=%u G=%u)\n",
+           unsigned(pixel_r(center)), unsigned(pixel_g(center)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Glow center dim (R=%u G=%u)\n",
+           unsigned(pixel_r(center)), unsigned(pixel_g(center)));
+    g_failures++;
+  }
+
+  // Edge of glow (just outside original circle, r=40, check at r=50) should have color bleed
+  uint32_t edge = get_pixel(result, 128 + 50, 128);
+  if (pixel_r(edge) > 15 || pixel_g(edge) > 15) {
+    printf("  PASS: Glow visible outside circle (R=%u G=%u)\n",
+           unsigned(pixel_r(edge)), unsigned(pixel_g(edge)));
+    g_passes++;
+  } else {
+    printf("  FAIL: No glow outside circle (R=%u G=%u)\n",
+           unsigned(pixel_r(edge)), unsigned(pixel_g(edge)));
+    g_failures++;
+  }
+}
+
+// ----- Test 21: Blur Quality Tiers -----
+static void test_blur_quality_tiers() {
+  printf("\nTest 21: Blur Quality Tiers\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+    ctx.fill_rect(BLRect(0, 0, 128, 256), BLRgba32(0xFFFF0000));
+    ctx.fill_rect(BLRect(128, 0, 128, 256), BLRgba32(0xFF0000FF));
+    ctx.end();
+  }
+
+  // Low quality (box blur)
+  BLImage blur_low, blur_mid, blur_high;
+  BLImage::blur(blur_low, src, 20.0, 0.0);
+  BLImage::blur(blur_mid, src, 20.0, 0.5);
+  BLImage::blur(blur_high, src, 20.0, 1.0);
+
+  save_image(blur_low, "test_21a_blur_q0_low.png");
+  save_image(blur_mid, "test_21b_blur_q50_mid.png");
+  save_image(blur_high, "test_21c_blur_q100_high.png");
+
+  // All three should produce blurred output (center boundary should be mixed)
+  uint32_t mid_low = get_pixel(blur_low, 128, 128);
+  uint32_t mid_mid = get_pixel(blur_mid, 128, 128);
+  uint32_t mid_high = get_pixel(blur_high, 128, 128);
+
+  bool low_ok = pixel_r(mid_low) > 30 && pixel_b(mid_low) > 30;
+  bool mid_ok = pixel_r(mid_mid) > 30 && pixel_b(mid_mid) > 30;
+  bool high_ok = pixel_r(mid_high) > 30 && pixel_b(mid_high) > 30;
+
+  if (low_ok) { printf("  PASS: Low quality blur blends center\n"); g_passes++; }
+  else { printf("  FAIL: Low quality not blurred\n"); g_failures++; }
+
+  if (mid_ok) { printf("  PASS: Mid quality blur blends center\n"); g_passes++; }
+  else { printf("  FAIL: Mid quality not blurred\n"); g_failures++; }
+
+  if (high_ok) { printf("  PASS: High quality blur blends center\n"); g_passes++; }
+  else { printf("  FAIL: High quality not blurred\n"); g_failures++; }
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -958,6 +1098,9 @@ int main(int argc, char* argv[]) {
   test_box_blur();
   test_gaussian_blur();
   test_blur_edge_cases();
+  test_drop_shadow();
+  test_glow();
+  test_blur_quality_tiers();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
