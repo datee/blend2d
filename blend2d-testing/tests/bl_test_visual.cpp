@@ -1312,6 +1312,123 @@ static void test_chained_effects() {
   g_passes++;
 }
 
+// ----- Test 25: Brightness/Contrast -----
+static void test_brightness_contrast() {
+  printf("\nTest 25: Brightness/Contrast\n");
+
+  // Create colorful source
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    BLGradient grad(BLLinearGradientValues(0, 0, 256, 256));
+    grad.add_stop(0.0, BLRgba32(0xFFFF0000));
+    grad.add_stop(0.5, BLRgba32(0xFF00FF00));
+    grad.add_stop(1.0, BLRgba32(0xFF0000FF));
+    ctx.fill_all(grad);
+    ctx.end();
+  }
+  save_image(src, "test_25a_bc_source.png");
+
+  // Brighten
+  BLImage bright;
+  BLImage::brightness_contrast(bright, src, 0.3, 0.0);
+  save_image(bright, "test_25b_bright.png");
+
+  uint32_t src_c = get_pixel(src, 128, 128);
+  uint32_t brt_c = get_pixel(bright, 128, 128);
+  // Brightened should have higher R+G+B
+  int src_sum = pixel_r(src_c) + pixel_g(src_c) + pixel_b(src_c);
+  int brt_sum = pixel_r(brt_c) + pixel_g(brt_c) + pixel_b(brt_c);
+  if (brt_sum > src_sum) {
+    printf("  PASS: Brighten increases luminance (%d > %d)\n", brt_sum, src_sum);
+    g_passes++;
+  } else {
+    printf("  FAIL: Brighten didn't increase (%d vs %d)\n", brt_sum, src_sum);
+    g_failures++;
+  }
+
+  // Darken
+  BLImage dark;
+  BLImage::brightness_contrast(dark, src, -0.3, 0.0);
+  save_image(dark, "test_25c_dark.png");
+
+  uint32_t drk_c = get_pixel(dark, 128, 128);
+  int drk_sum = pixel_r(drk_c) + pixel_g(drk_c) + pixel_b(drk_c);
+  if (drk_sum < src_sum) {
+    printf("  PASS: Darken decreases luminance (%d < %d)\n", drk_sum, src_sum);
+    g_passes++;
+  } else {
+    printf("  FAIL: Darken didn't decrease (%d vs %d)\n", drk_sum, src_sum);
+    g_failures++;
+  }
+
+  // High contrast
+  BLImage contrast;
+  BLImage::brightness_contrast(contrast, src, 0.0, 0.8);
+  save_image(contrast, "test_25d_high_contrast.png");
+  printf("  PASS: High contrast image saved\n");
+  g_passes++;
+}
+
+// ----- Test 26: Saturation -----
+static void test_saturation() {
+  printf("\nTest 26: Saturation\n");
+
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    BLGradient grad(BLLinearGradientValues(0, 0, 256, 0));
+    grad.add_stop(0.0, BLRgba32(0xFFFF0000));
+    grad.add_stop(0.5, BLRgba32(0xFF00FF00));
+    grad.add_stop(1.0, BLRgba32(0xFF0000FF));
+    ctx.fill_all(grad);
+    ctx.end();
+  }
+  save_image(src, "test_26a_sat_source.png");
+
+  // Grayscale (saturation = 0)
+  BLImage gray;
+  BLImage::saturation(gray, src, 0.0);
+  save_image(gray, "test_26b_grayscale.png");
+
+  // Verify grayscale: R ≈ G ≈ B at center
+  uint32_t gc = get_pixel(gray, 128, 128);
+  int diff = bl_abs(int(pixel_r(gc)) - int(pixel_g(gc))) + bl_abs(int(pixel_g(gc)) - int(pixel_b(gc)));
+  if (diff < 5) {
+    printf("  PASS: Grayscale: R≈G≈B (R=%u G=%u B=%u, diff=%d)\n",
+           unsigned(pixel_r(gc)), unsigned(pixel_g(gc)), unsigned(pixel_b(gc)), diff);
+    g_passes++;
+  } else {
+    printf("  FAIL: Grayscale not neutral (R=%u G=%u B=%u, diff=%d)\n",
+           unsigned(pixel_r(gc)), unsigned(pixel_g(gc)), unsigned(pixel_b(gc)), diff);
+    g_failures++;
+  }
+
+  // Oversaturated (factor = 2.0)
+  BLImage sat;
+  BLImage::saturation(sat, src, 2.0);
+  save_image(sat, "test_26c_oversaturated.png");
+
+  // Far left should be very red (more saturated than original)
+  uint32_t sat_left = get_pixel(sat, 20, 128);
+  uint32_t src_left = get_pixel(src, 20, 128);
+  if (pixel_r(sat_left) >= pixel_r(src_left)) {
+    printf("  PASS: Oversaturated: red more intense (sat=%u >= src=%u)\n",
+           unsigned(pixel_r(sat_left)), unsigned(pixel_r(src_left)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Oversaturated: red not more intense\n");
+    g_failures++;
+  }
+
+  // Half saturation
+  BLImage half;
+  BLImage::saturation(half, src, 0.5);
+  save_image(half, "test_26d_half_saturation.png");
+  printf("  PASS: Half saturation image saved\n");
+  g_passes++;
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -1344,6 +1461,8 @@ int main(int argc, char* argv[]) {
   test_glow_modes();
   test_inner_drop_shadow();
   test_chained_effects();
+  test_brightness_contrast();
+  test_saturation();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);

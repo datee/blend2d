@@ -72,9 +72,13 @@ BL_DEFINE_ENUM(BLImageEffectType) {
   BL_IMAGE_EFFECT_TYPE_GLOW = 2,
   //! Drop shadow. Extracts alpha, blurs, colorizes, offsets, composites behind original.
   BL_IMAGE_EFFECT_TYPE_DROP_SHADOW = 3,
+  //! Brightness/contrast adjustment. `radius` = brightness (-1 to +1), `quality` = contrast (-1 to +1).
+  BL_IMAGE_EFFECT_TYPE_BRIGHTNESS_CONTRAST = 4,
+  //! Saturation adjustment. `radius` field is used as saturation factor (0 = grayscale, 1 = unchanged, 2 = oversaturated).
+  BL_IMAGE_EFFECT_TYPE_SATURATION = 5,
 
   //! Maximum value of `BLImageEffectType`.
-  BL_IMAGE_EFFECT_TYPE_MAX_VALUE = 3
+  BL_IMAGE_EFFECT_TYPE_MAX_VALUE = 5
 
   BL_FORCE_ENUM_UINT32(BL_IMAGE_EFFECT_TYPE)
 };
@@ -620,6 +624,26 @@ public:
   //! All intermediate effect layers are composited together with the original on a shared canvas.
   static BL_INLINE_NODEBUG BLResult apply_effects(BLImage& dst, const BLImage& src, const BLImageEffectOptions* options, uint32_t count) noexcept {
     return bl_image_apply_effects(&dst, &src, options, count);
+  }
+
+  //! Convenience: brightness and contrast adjustment.
+  //! `brightness` range: -1.0 (black) to +1.0 (white), 0.0 = unchanged.
+  //! `contrast` range: -1.0 (flat gray) to +1.0 (maximum contrast), 0.0 = unchanged.
+  static BL_INLINE_NODEBUG BLResult brightness_contrast(BLImage& dst, const BLImage& src, double brightness, double contrast) noexcept {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_BRIGHTNESS_CONTRAST;
+    opts.radius = brightness;
+    opts.quality = contrast;
+    return bl_image_apply_effect(&dst, &src, &opts);
+  }
+
+  //! Convenience: saturation adjustment.
+  //! `factor`: 0.0 = grayscale, 1.0 = unchanged, 2.0 = double saturation.
+  static BL_INLINE_NODEBUG BLResult saturation(BLImage& dst, const BLImage& src, double factor) noexcept {
+    BLImageEffectOptions opts{};
+    opts.type = BL_IMAGE_EFFECT_TYPE_SATURATION;
+    opts.radius = factor;
+    return bl_image_apply_effect(&dst, &src, &opts);
   }
 
   //! Convenience: drop shadow (blur alpha, colorize, offset, composite behind).

@@ -798,6 +798,170 @@ BL_API_IMPL BLResult bl_image_apply_effect(BLImageCore* dst, const BLImageCore* 
     return BL_SUCCESS;
   }
 
+  if (options->type == BL_IMAGE_EFFECT_TYPE_BRIGHTNESS_CONTRAST) {
+    // Brightness/contrast: per-pixel color adjustment.
+    // brightness = options->radius  (-1 to +1)
+    // contrast   = options->quality (-1 to +1)
+    BLImagePrivateImpl* si = get_impl(src);
+    int w = si->size.w;
+    int h = si->size.h;
+
+    double brightness = bl_clamp(options->radius, -1.0, 1.0);
+    double contrast = bl_clamp(options->quality, -1.0, 1.0);
+
+    // Build lookup table for speed.
+    // Contrast: scale around midpoint (128). contrast_factor = (1 + contrast) for positive, tan-based for full range.
+    double cf = (contrast >= 0.0) ? (1.0 + contrast * 3.0) : (1.0 + contrast);
+    int32_t lut[256];
+    for (int i = 0; i < 256; i++) {
+      double v = double(i) / 255.0;
+      v += brightness;                          // Brightness shift
+      v = (v - 0.5) * cf + 0.5;                // Contrast around midpoint
+      int iv = int(v * 255.0 + 0.5);
+      lut[i] = bl_clamp(iv, 0, 255);
+    }
+
+    // Deep copy source if needed.
+    BLImage src_copy;
+    if (dst == src) {
+      src_copy = src->dcast();
+      BL_PROPAGATE(bl_image_create(dst, w, h, BLFormat(si->format)));
+    } else {
+      BL_PROPAGATE(bl_image_create(dst, w, h, BLFormat(si->format)));
+    }
+
+    BLImageData src_data, dst_data;
+    if (src_copy.width() > 0)
+      src_copy.get_data(&src_data);
+    else
+      src->dcast().get_data(&src_data);
+    dst->dcast().make_mutable(&dst_data);
+
+    const uint8_t* sp = static_cast<const uint8_t*>(src_data.pixel_data);
+    uint8_t* dp = static_cast<uint8_t*>(dst_data.pixel_data);
+
+    if (si->format == BL_FORMAT_PRGB32 || si->format == BL_FORMAT_XRGB32) {
+      for (int y = 0; y < h; y++) {
+        const uint32_t* srow = reinterpret_cast<const uint32_t*>(sp);
+        uint32_t* drow = reinterpret_cast<uint32_t*>(dp);
+        for (int x = 0; x < w; x++) {
+          uint32_t p = srow[x];
+          uint32_t a = (p >> 24) & 0xFF;
+          // Unpremultiply for correct brightness/contrast, then repremultiply.
+          uint32_t r, g, b;
+          if (a > 0 && a < 255) {
+            r = bl_min(uint32_t(((p >> 16) & 0xFF) * 255 / a), 255u);
+            g = bl_min(uint32_t(((p >>  8) & 0xFF) * 255 / a), 255u);
+            b = bl_min(uint32_t(((p >>  0) & 0xFF) * 255 / a), 255u);
+          } else {
+            r = (p >> 16) & 0xFF;
+            g = (p >>  8) & 0xFF;
+            b = (p >>  0) & 0xFF;
+          }
+
+          r = uint32_t(lut[r]);
+          g = uint32_t(lut[g]);
+          b = uint32_t(lut[b]);
+
+          // Repremultiply.
+          if (a < 255) {
+            r = r * a / 255;
+            g = g * a / 255;
+            b = b * a / 255;
+          }
+          drow[x] = b | (g << 8) | (r << 16) | (a << 24);
+        }
+        sp += src_data.stride;
+        dp += dst_data.stride;
+      }
+    }
+    else if (si->format == BL_FORMAT_A8) {
+      // A8: brightness only (no color to adjust contrast on).
+      for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++)
+          dp[x] = uint8_t(lut[sp[x]]);
+        sp += src_data.stride;
+        dp += dst_data.stride;
+      }
+    }
+
+    return BL_SUCCESS;
+  }
+
+  if (options->type == BL_IMAGE_EFFECT_TYPE_SATURATION) {
+    // Saturation: lerp between grayscale and original.
+    // factor = options->radius (0 = grayscale, 1 = unchanged, >1 = oversaturated)
+    BLImagePrivateImpl* si = get_impl(src);
+    int w = si->size.w;
+    int h = si->size.h;
+
+    double factor = bl_max(options->radius, 0.0);
+
+    BLImage src_copy;
+    if (dst == src) {
+      src_copy = src->dcast();
+      BL_PROPAGATE(bl_image_create(dst, w, h, BLFormat(si->format)));
+    } else {
+      BL_PROPAGATE(bl_image_create(dst, w, h, BLFormat(si->format)));
+    }
+
+    BLImageData src_data, dst_data;
+    if (src_copy.width() > 0)
+      src_copy.get_data(&src_data);
+    else
+      src->dcast().get_data(&src_data);
+    dst->dcast().make_mutable(&dst_data);
+
+    const uint8_t* sp = static_cast<const uint8_t*>(src_data.pixel_data);
+    uint8_t* dp = static_cast<uint8_t*>(dst_data.pixel_data);
+
+    if (si->format == BL_FORMAT_PRGB32 || si->format == BL_FORMAT_XRGB32) {
+      // Fixed-point factor: 8.8 format.
+      int32_t f = int32_t(factor * 256.0 + 0.5);
+      int32_t inv_f = 256 - f;
+
+      for (int y = 0; y < h; y++) {
+        const uint32_t* srow = reinterpret_cast<const uint32_t*>(sp);
+        uint32_t* drow = reinterpret_cast<uint32_t*>(dp);
+        for (int x = 0; x < w; x++) {
+          uint32_t p = srow[x];
+          uint32_t a = (p >> 24) & 0xFF;
+          uint32_t r = (p >> 16) & 0xFF;
+          uint32_t g = (p >>  8) & 0xFF;
+          uint32_t b = (p >>  0) & 0xFF;
+
+          // Unpremultiply.
+          uint32_t ur = r, ug = g, ub = b;
+          if (a > 0 && a < 255) {
+            ur = bl_min(r * 255 / a, 255u);
+            ug = bl_min(g * 255 / a, 255u);
+            ub = bl_min(b * 255 / a, 255u);
+          }
+
+          // Luminance (BT.709).
+          int32_t lum = int32_t(ur * 54 + ug * 183 + ub * 19) >> 8; // ~0.2126R + 0.7152G + 0.0722B
+
+          // Lerp: result = lum + factor * (channel - lum)
+          int32_t nr = bl_clamp(int32_t((lum * inv_f + int32_t(ur) * f) >> 8), 0, 255);
+          int32_t ng = bl_clamp(int32_t((lum * inv_f + int32_t(ug) * f) >> 8), 0, 255);
+          int32_t nb = bl_clamp(int32_t((lum * inv_f + int32_t(ub) * f) >> 8), 0, 255);
+
+          // Repremultiply.
+          if (a < 255) {
+            nr = nr * int32_t(a) / 255;
+            ng = ng * int32_t(a) / 255;
+            nb = nb * int32_t(a) / 255;
+          }
+          drow[x] = uint32_t(nb) | (uint32_t(ng) << 8) | (uint32_t(nr) << 16) | (a << 24);
+        }
+        sp += src_data.stride;
+        dp += dst_data.stride;
+      }
+    }
+
+    return BL_SUCCESS;
+  }
+
   return bl_make_error(BL_ERROR_INVALID_VALUE);
 }
 
