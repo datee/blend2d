@@ -224,17 +224,41 @@ Phase 8 (Future API) ─── independent, lowest priority
 Phase 9 (Workarounds) ─── monitor only
 ```
 
-## Estimated Scope
+## Current Status
 
-| Phase | Items | Complexity | Files Touched |
-|-------|-------|------------|---------------|
-| 1 | 8 | Low | ~10 |
-| 2 | 5 | Low-Medium | 3 |
-| 3 | 5 | Medium | 2 |
-| 4 | 6 | Medium | 3 |
-| 5 | 12 | Medium-High | 5 |
-| 6 | 12 | Medium-High | 4 |
-| 7 | 11 | Medium-High | 5 |
-| 8 | 3 | Low-Medium | 3 |
-| 9 | 2 | None (monitor) | 0 |
-| **Total** | **64** | | **~20 unique files** |
+| Phase | Items | Status | Notes |
+|-------|-------|--------|-------|
+| 1 | 8 | **DONE** | Cleanup, deprecated code, docs, futex |
+| 2 | 5 | **DONE** | JIT alpha multiply, AVX-512 docs, blit alignment, AArch64 |
+| 3 | 5 | **DONE** | A8 satisfy-pixel, solid preprocessing, predicated fetch docs |
+| 4 | 7 | **DONE** | SIMD movw_ functions, conversion refactor, docs |
+| 5 | 12 | **PARTIAL** | 5.3a band height done, 5.7 path clipping done, rest documented |
+| 6 | 12 | Deferred | OpenType fonts |
+| 7 | 11 | Deferred | Image codecs |
+| 8 | 3 | Deferred | Future API |
+| 9 | 2 | Monitor | Compiler workarounds |
+
+## New Features (not in original plan)
+
+| Feature | Status |
+|---------|--------|
+| Image filter system (blur, Gaussian, quality tiers) | **DONE** — threaded, SSE2/AVX2, downscale opt |
+| Effect API (glow, shadow, tint, saturation, brightness, color matrix) | **DONE** — inner/outer/knockout, chaining, opacity/spread/strength |
+| Path clipping (clip_to_path) | **DONE** — nested clips, save/restore, sync+async |
+| BLContext::apply_filter() | **DONE** — flush + extract + filter + writeback |
+| Visual test infrastructure (bl_test_visual) | **DONE** — 48 scenes, 159 checks, 60+ PNGs |
+
+## Phase 5 Detail
+
+| Item | Status |
+|------|--------|
+| 5.1 Masking (public mask API) | Investigated — needs serializer init_fetch_data_for_mask. Plan saved. |
+| 5.2 FetchData offloading | Documented — threading-sensitive, deferred |
+| 5.3a Band height (bpp) | **DONE** |
+| 5.3b CPU cache detection | Documented — kept 256KB default |
+| 5.3c Component type | Documented — all formats 8bpc |
+| 5.4 Partial fetch granularity | Documented — JIT, needs asmjit |
+| 5.5 Aligned pad max pixels | Documented — JIT, fetch2x4 removed |
+| 5.6 Affine bilinear fetch4 | Documented — JIT, high complexity |
+| 5.7 Path-based clipping | **DONE** |
+| 5.8 Async pipeline docs | Documented |
