@@ -2528,6 +2528,49 @@ static void test_context_apply_filter() {
   check_pixel_near(img, 80, 200, 0xFFFFFFFF, 0, "Context filter: below region sharp white");
 }
 
+// ----- Test 47: Glow on Clipped Shape -----
+static void test_glow_clipped_shape() {
+  printf("\nTest 47: Glow on Clipped Shape\n");
+
+  // Draw a circle on transparent, clip to circle, then apply glow
+  BLImage src(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src);
+    ctx.clear_all();
+
+    // Clip to circle
+    BLPath clip;
+    clip.add_circle(BLCircle(128, 128, 60));
+    ctx.clip_to_path(clip);
+
+    // Fill white inside clip
+    ctx.fill_all(BLRgba32(0xFFFFFFFF));
+    ctx.end();
+  }
+
+  // Apply glow to the result
+  BLImage result;
+  BLImage::glow(result, src, 20.0, BLRgba32(0xFFFF4400));
+  save_image(result, "test_47_glow_on_clipped.png");
+
+  // Center should be white (original preserved)
+  uint32_t center = get_pixel(result, 128, 128);
+  if (pixel_r(center) > 240 && pixel_g(center) > 240 && pixel_b(center) > 240) {
+    printf("  PASS: Center is white\n"); g_passes++;
+  } else {
+    printf("  FAIL: Center not white (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(center)), unsigned(pixel_g(center)), unsigned(pixel_b(center))); g_failures++;
+  }
+
+  // Outside circle should have glow color
+  uint32_t glow_edge = get_pixel(result, 128 + 70, 128);
+  if (pixel_r(glow_edge) > 10) {
+    printf("  PASS: Glow visible outside clip (R=%u)\n", unsigned(pixel_r(glow_edge))); g_passes++;
+  } else {
+    printf("  FAIL: No glow outside clip (R=%u)\n", unsigned(pixel_r(glow_edge))); g_failures++;
+  }
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -2582,6 +2625,7 @@ int main(int argc, char* argv[]) {
   test_path_clip_blit();
   test_color_matrix();
   test_context_apply_filter();
+  test_glow_clipped_shape();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
