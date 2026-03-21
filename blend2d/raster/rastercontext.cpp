@@ -2806,6 +2806,13 @@ BL_INLINE BLResult fill_clipped_box_a<kSync>(BLRasterContextImpl* ctx_impl, Disp
 
 template<>
 BL_INLINE BLResult fill_clipped_box_a<kAsync>(BLRasterContextImpl* ctx_impl, DispatchInfo di, DispatchStyle ds, const BLBoxI& box_a) noexcept {
+  // When clip mask is active, redirect through sync masked fill (async masked fill
+  // is defined later in the file). This is correct because the clip_to_path rasterization
+  // itself is synchronous, so falling back to sync for the masked fill is consistent.
+  if (ctx_impl->clip_mode() == BL_CLIP_MODE_MASK) {
+    return fill_with_clip_mask_sync(ctx_impl, di, ds, box_a);
+  }
+
   RenderCommand* command = ctx_impl->worker_mgr->current_command();
 
   di.add_fill_type(Pipeline::FillType::kBoxA);
@@ -3097,6 +3104,11 @@ BL_NOINLINE BLResult fill_clipped_edges<kSync>(BLRasterContextImpl* ctx_impl, Di
 
 template<>
 BL_NOINLINE BLResult fill_clipped_edges<kAsync>(BLRasterContextImpl* ctx_impl, DispatchInfo di, DispatchStyle ds, BLFillRule fill_rule) noexcept {
+  // When clip mask is active, fall back to sync processing for analytic fills.
+  // The temp-image-composite technique can't be deferred to async workers.
+  if (ctx_impl->clip_mode() == BL_CLIP_MODE_MASK)
+    return fill_clipped_edges<kSync>(ctx_impl, di, ds, fill_rule);
+
   RenderCommand* command = ctx_impl->worker_mgr->current_command();
 
   WorkData& work_data = ctx_impl->sync_work_data;

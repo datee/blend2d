@@ -2571,6 +2571,58 @@ static void test_glow_clipped_shape() {
   }
 }
 
+// ----- Test 48: Async Path Clipping -----
+static void test_async_path_clip() {
+  printf("\nTest 48: Async Path Clipping\n");
+
+  // Sync reference
+  BLImage sync_img(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(sync_img);
+    ctx.fill_all(BLRgba32(0xFFFFFFFF));
+    BLPath circle; circle.add_circle(BLCircle(128, 128, 80));
+    ctx.clip_to_path(circle);
+    ctx.fill_all(BLRgba32(0xFFFF0000));
+    ctx.end();
+  }
+
+  // Async version (2 threads)
+  BLImage async_img(256, 256, BL_FORMAT_PRGB32);
+  {
+    BLContextCreateInfo ci{};
+    ci.thread_count = 2;
+    BLContext ctx(async_img, ci);
+    ctx.fill_all(BLRgba32(0xFFFFFFFF));
+    BLPath circle; circle.add_circle(BLCircle(128, 128, 80));
+    ctx.clip_to_path(circle);
+    ctx.fill_all(BLRgba32(0xFFFF0000));
+    ctx.end();
+  }
+
+  save_image(async_img, "test_48_async_clip.png");
+
+  // Compare sync vs async — center should match
+  uint32_t sync_center = get_pixel(sync_img, 128, 128);
+  uint32_t async_center = get_pixel(async_img, 128, 128);
+
+  if (pixel_r(async_center) > 200 && pixel_g(async_center) < 50) {
+    printf("  PASS: Async clip center is red (R=%u)\n", unsigned(pixel_r(async_center)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Async clip center wrong (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(async_center)), unsigned(pixel_g(async_center)), unsigned(pixel_b(async_center)));
+    g_failures++;
+  }
+
+  // Corner should be white in both
+  uint32_t async_corner = get_pixel(async_img, 10, 10);
+  if (pixel_r(async_corner) > 240 && pixel_g(async_corner) > 240) {
+    printf("  PASS: Async clip corner is white\n"); g_passes++;
+  } else {
+    printf("  FAIL: Async clip corner wrong\n"); g_failures++;
+  }
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -2626,6 +2678,7 @@ int main(int argc, char* argv[]) {
   test_color_matrix();
   test_context_apply_filter();
   test_glow_clipped_shape();
+  test_async_path_clip();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
