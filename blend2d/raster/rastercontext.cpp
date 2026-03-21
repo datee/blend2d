@@ -2199,10 +2199,13 @@ static BLResult clip_to_final_box(BLRasterContextImpl* ctx_impl, const BLBox& in
 
     int32_t bits = clipBoxFixedI.x0 | clipBoxFixedI.y0 | clipBoxFixedI.x1 | clipBoxFixedI.y1;
 
-    if ((bits & fpMaskI) == 0)
-      ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_ALIGNED_RECT;
-    else
-      ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_UNALIGNED_RECT;
+    // Preserve MASK mode if active — rect clip narrows the box but the mask still constrains shape.
+    if (ctx_impl->sync_work_data.clip_mode != BL_CLIP_MODE_MASK) {
+      if ((bits & fpMaskI) == 0)
+        ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_ALIGNED_RECT;
+      else
+        ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_UNALIGNED_RECT;
+    }
   }
   else {
     ctx_impl->internal_state.final_clip_box_d.reset();
@@ -2283,12 +2286,16 @@ Use64Bit:
     ctx_impl->internal_state.final_clip_box_i = b;
     ctx_impl->internal_state.final_clip_box_d.reset(b);
     ctx_impl->set_final_clip_box_fixed_d(ctx_impl->final_clip_box_d() * ctx_impl->fp_scale_d());
+    // Preserve MASK mode: rect clip narrows the bounding box but the mask still constrains shape.
+    // clip_mode stays MASK if it was MASK before.
   }
   else {
     ctx_impl->internal_state.final_clip_box_i.reset();
     ctx_impl->internal_state.final_clip_box_d.reset(b);
     ctx_impl->set_final_clip_box_fixed_d(BLBox(0, 0, 0, 0));
     ctx_impl->context_flags |= ContextFlags::kNoClipRect;
+    // Empty clip → no mask needed.
+    ctx_impl->sync_work_data.clip_mode = BL_CLIP_MODE_ALIGNED_RECT;
   }
 
   ctx_impl->context_flags &= ~(ContextFlags::kWeakStateClip | ContextFlags::kSharedStateFill);
@@ -2366,7 +2373,42 @@ static BLResult BL_CDECL clip_to_path_impl(BLContextImpl* base_impl, const BLPat
     mask_ctx.end();
   }
 
-  // Step 2: Save state and update clipping.
+  // Step 2: If there's already a clip mask active, intersect the new mask with it.
+  if (ctx_impl->clip_mode() == BL_CLIP_MODE_MASK) {
+    BLImageData new_data;
+    mask_image.make_mutable(&new_data);
+    uint8_t* new_pixels = static_cast<uint8_t*>(new_data.pixel_data);
+
+    BLImageData old_data;
+    ctx_impl->clip_mask.dcast().get_data(&old_data);
+    const uint8_t* old_pixels = static_cast<const uint8_t*>(old_data.pixel_data);
+
+    int old_x0 = ctx_impl->clip_mask_offset.x;
+    int old_y0 = ctx_impl->clip_mask_offset.y;
+
+    // Multiply each pixel of the new mask by the corresponding pixel of the old mask.
+    for (int y = 0; y < mask_h; y++) {
+      for (int x = 0; x < mask_w; x++) {
+        // Map new mask pixel (x, y) to device coords (mask_x0 + x, mask_y0 + y)
+        // then to old mask coords.
+        int dev_x = mask_x0 + x;
+        int dev_y = mask_y0 + y;
+        int old_mx = dev_x - old_x0;
+        int old_my = dev_y - old_y0;
+
+        uint8_t old_alpha = 0;
+        if (old_mx >= 0 && old_mx < old_data.size.w && old_my >= 0 && old_my < old_data.size.h) {
+          old_alpha = old_pixels[old_my * old_data.stride + old_mx];
+        }
+
+        uint8_t new_alpha = new_pixels[y * new_data.stride + x];
+        // Multiply: intersection of both masks.
+        new_pixels[y * new_data.stride + x] = uint8_t(uint32_t(new_alpha) * uint32_t(old_alpha) / 255);
+      }
+    }
+  }
+
+  // Step 3: Save state and update clipping.
   on_before_clip_box_change(ctx_impl);
 
   // Store the mask and path in the context.

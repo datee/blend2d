@@ -2091,6 +2091,96 @@ static void test_path_clip_save_restore() {
   save_image(img, "test_38_path_clip_save_restore.png");
 }
 
+// ----- Test 39: Nested Path Clipping -----
+static void test_nested_path_clip() {
+  printf("\nTest 39: Nested Path Clipping\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFFFFFFFF)); // White background
+
+  // First clip: large circle
+  BLPath circle;
+  circle.add_circle(BLCircle(128, 128, 100));
+  ctx.clip_to_path(circle);
+
+  // Second clip: rectangle (intersection = circle ∩ rect)
+  ctx.clip_to_rect(BLRect(128, 0, 128, 256)); // Right half
+
+  // Fill red — should only appear in right half of circle
+  ctx.fill_all(BLRgba32(0xFFFF0000));
+
+  ctx.end();
+
+  // Right side inside circle: red
+  check_pixel_near(img, 180, 128, 0xFFFF0000, 5, "Nested clip: right inside circle (red)");
+
+  // Left side inside circle but outside rect clip: white (not filled)
+  check_pixel_near(img, 80, 128, 0xFFFFFFFF, 5, "Nested clip: left inside circle (white)");
+
+  // Outside circle entirely: white
+  check_pixel_near(img, 10, 10, 0xFFFFFFFF, 0, "Nested clip: outside both (white)");
+
+  save_image(img, "test_39_nested_path_clip.png");
+}
+
+// ----- Test 40: Double Path Clip (two paths) -----
+static void test_double_path_clip() {
+  printf("\nTest 40: Double Path Clip (Circle ∩ Triangle)\n");
+
+  BLImage img(256, 256, BL_FORMAT_PRGB32);
+  BLContext ctx(img);
+
+  ctx.set_comp_op(BL_COMP_OP_SRC_COPY);
+  ctx.fill_all(BLRgba32(0xFF000000)); // Black background
+
+  // Clip to circle
+  BLPath circle;
+  circle.add_circle(BLCircle(128, 128, 90));
+  ctx.clip_to_path(circle);
+
+  // Clip to triangle (intersection = crescent/lens shape)
+  BLPath triangle;
+  triangle.move_to(128, 10);
+  triangle.line_to(10, 240);
+  triangle.line_to(246, 240);
+  triangle.close();
+  ctx.clip_to_path(triangle);
+
+  // Fill green — only visible in circle ∩ triangle
+  ctx.fill_all(BLRgba32(0xFF00FF00));
+
+  ctx.end();
+
+  // Center-bottom (inside both): green
+  uint32_t center = get_pixel(img, 128, 180);
+  if (pixel_g(center) > 200) {
+    printf("  PASS: Double clip: center-bottom green (G=%u)\n", unsigned(pixel_g(center)));
+    g_passes++;
+  } else {
+    printf("  FAIL: Double clip: center-bottom not green (G=%u)\n", unsigned(pixel_g(center)));
+    g_failures++;
+  }
+
+  // Top center (inside triangle but outside circle): black
+  uint32_t top = get_pixel(img, 128, 30);
+  if (pixel_r(top) < 10 && pixel_g(top) < 10 && pixel_b(top) < 10) {
+    printf("  PASS: Double clip: top (outside circle) black\n");
+    g_passes++;
+  } else {
+    printf("  FAIL: Double clip: top not black (R=%u G=%u B=%u)\n",
+           unsigned(pixel_r(top)), unsigned(pixel_g(top)), unsigned(pixel_b(top)));
+    g_failures++;
+  }
+
+  // Far left (outside both): black
+  check_pixel_near(img, 5, 128, 0xFF000000, 0, "Double clip: far left black");
+
+  save_image(img, "test_40_double_path_clip.png");
+}
+
 // ----- Main -----
 int main(int argc, char* argv[]) {
   (void)argc;
@@ -2137,6 +2227,8 @@ int main(int argc, char* argv[]) {
   test_path_clip_circle();
   test_path_clip_triangle();
   test_path_clip_save_restore();
+  test_nested_path_clip();
+  test_double_path_clip();
 
   printf("\n==============================\n");
   printf("Results: %d passed, %d failed\n", g_passes, g_failures);
