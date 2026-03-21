@@ -1661,18 +1661,10 @@ static void test_effect_showcase() {
   }
   save_image(src, "test_30a_showcase_source.png");
 
-  // Apply each effect type
+  // Blur and color adjustments work on opaque source
   BLImage blur_result;
   BLImage::blur(blur_result, src, 8.0);
   save_image(blur_result, "test_30b_showcase_blur.png");
-
-  BLImage shadow_result;
-  BLImage::drop_shadow(shadow_result, src, 12.0, 8.0, 8.0, BLRgba32(0xAA000000));
-  save_image(shadow_result, "test_30c_showcase_shadow.png");
-
-  BLImage glow_result;
-  BLImage::glow(glow_result, src, 15.0, BLRgba32(0xFFE94560));
-  save_image(glow_result, "test_30d_showcase_glow.png");
 
   BLImage bright_result;
   BLImage::brightness_contrast(bright_result, src, 0.15, 0.3);
@@ -1686,26 +1678,53 @@ static void test_effect_showcase() {
   BLImage::saturation(vivid_result, src, 1.8);
   save_image(vivid_result, "test_30g_showcase_vivid.png");
 
-  // Chain: glow + inner glow + brightness
+  // Shadow, glow, and chaining need transparent background to work correctly
+  // (effects operate on the alpha channel — opaque backgrounds make them affect the whole rect).
+  BLImage src_alpha(300, 200, BL_FORMAT_PRGB32);
+  {
+    BLContext ctx(src_alpha);
+    ctx.clear_all();  // Transparent background
+
+    BLPath c1; c1.add_circle(BLCircle(80, 100, 45));
+    ctx.fill_path(c1, BLRgba32(0xFFE94560));
+
+    BLPath c2; c2.add_circle(BLCircle(220, 100, 45));
+    ctx.fill_path(c2, BLRgba32(0xFF0F3460));
+
+    ctx.fill_round_rect(BLRoundRect(120, 60, 60, 80, 10), BLRgba32(0xFFFFD700));
+    ctx.end();
+  }
+  save_image(src_alpha, "test_30a2_showcase_transparent.png");
+
+  BLImage shadow_result;
+  BLImage::drop_shadow(shadow_result, src_alpha, 12.0, 8.0, 8.0, BLRgba32(0xAA000000));
+  save_image(shadow_result, "test_30c_showcase_shadow.png");
+
+  BLImage glow_result;
+  BLImage::glow(glow_result, src_alpha, 15.0, BLRgba32(0xFFE94560));
+  save_image(glow_result, "test_30d_showcase_glow.png");
+
+  // Chain: outer glow + inner glow + drop shadow (on transparent source)
   BLImageEffectOptions chain[3] = {};
   chain[0].type = BL_IMAGE_EFFECT_TYPE_GLOW;
   chain[0].radius = 20.0; chain[0].quality = 0.5;
-  chain[0].color = 0x80E94560;
+  chain[0].color = 0xFFE94560;
 
   chain[1].type = BL_IMAGE_EFFECT_TYPE_GLOW;
   chain[1].radius = 8.0; chain[1].quality = 0.5;
   chain[1].color = 0xFFFFD700;
   chain[1].flags = BL_IMAGE_EFFECT_FLAG_INNER;
 
-  chain[2].type = BL_IMAGE_EFFECT_TYPE_BRIGHTNESS_CONTRAST;
-  chain[2].radius = 0.1; // brightness
-  chain[2].quality = 0.2; // contrast
+  chain[2].type = BL_IMAGE_EFFECT_TYPE_DROP_SHADOW;
+  chain[2].radius = 10.0; chain[2].quality = 0.5;
+  chain[2].offset_x = 5.0; chain[2].offset_y = 5.0;
+  chain[2].color = 0xCC000000;
 
   BLImage chain_result;
-  BLImage::apply_effects(chain_result, src, chain, 3);
+  BLImage::apply_effects(chain_result, src_alpha, chain, 3);
   save_image(chain_result, "test_30h_showcase_chained.png");
 
-  printf("  Saved 8 showcase images\n");
+  printf("  Saved 9 showcase images\n");
   g_passes++;
 
   // Verify they're all different from source
